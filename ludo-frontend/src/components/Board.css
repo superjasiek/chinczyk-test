@@ -1,0 +1,143 @@
+.board {
+  display: grid;
+  grid-template-columns: repeat(15, 40px);
+  grid-template-rows: repeat(15, 40px);
+  gap: 1px;
+}
+
+.cell {
+  width: 40px;
+  height: 40px;
+  border: 1px solid #ccc;
+  box-sizing: border-box;
+  /* Updated for pawn positioning */
+  position: relative; 
+  display: flex; 
+  align-items: center;
+  justify-content: center;
+}
+
+/* Typy pól */
+.empty {
+  background-color: #f0f0f0;
+}
+.path {
+  background-color: #fff;
+}
+.center {
+  background-color: #000;
+}
+
+/* Startowe */
+.start.red {
+  background-color: #ee3030;
+}
+.start.green {
+  background-color: #03f703;
+}
+.start.yellow {
+  background-color: #e9e920;
+}
+.start.blue {
+  background-color: #4141e0;
+}
+
+/* Pola mety */
+.goal.red {
+  background-color: #ff0000;
+}
+.goal.green {
+  background-color: #00cc00;
+}
+.goal.yellow {
+  background-color: #cccc00;
+}
+.goal.blue {
+  background-color: #0000cc;
+}
+
+.cell-label {
+  font-size: 9px;
+  color: #333;
+  position: absolute;
+  top: 1px;
+  left: 2px;
+  pointer-events: none;
+}
+
+/* Exit fields styling - ensure these are kept if they are distinct from path/goal */
+.exit.red {
+  background-color: #ff6666; /* Example: slightly lighter red */
+}
+.exit.green {
+  background-color: #66ff66; /* Example: slightly lighter green */
+}
+.exit.yellow {
+  background-color: #ffff66; /* Example: slightly lighter yellow */
+}
+.exit.blue {
+  background-color: #6666ff; /* Example: slightly lighter blue */
+}
+
+/* Pawn Styling */
+.pawn {
+  width: 25px; 
+  height: 25px; 
+  border-radius: 50%;
+  border: 2px solid #333; 
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px; 
+  color: white;
+  text-shadow: 0 0 2px black, 0 0 2px black;
+  position: absolute;
+}
+
+/* Stacking for multiple pawns in one cell */
+.cell .pawn:nth-child(1) { z-index: 1; }
+.cell .pawn:nth-child(2) { transform: translate(3px, 3px); z-index: 2; }
+.cell .pawn:nth-child(3) { transform: translate(-3px, -3px); z-index: 3; }
+.cell .pawn:nth-child(4) { transform: translate(6px, -3px); z-index: 4; }
+
+.pawn.red { background-color: #e74c3c; border-color: #c0392b; }
+.pawn.green { background-color: #2ecc71; border-color: #27ae60; }
+.pawn.yellow { background-color: #f1c40f; border-color: #f39c12; }
+.pawn.blue { background-color: #3498db; border-color: #2980b9; }
+
+.pawn.movable {
+  border-color: gold;
+  box-shadow: 0 0 10px gold, 0 0 5px yellow; 
+  cursor: pointer;
+  animation: pulseMovable 1.2s infinite ease-in-out;
+  z-index: 10; /* Ensure movable pawns are on top */
+}
+
+@keyframes pulseMovable {
+  0% { transform: scale(1) translate(0,0); } /* Combine with existing translate for stacking */
+  50% { transform: scale(1.15) translate(0,0); }
+  100% { transform: scale(1) translate(0,0); }
+}
+
+/* Adjust pulseMovable for stacked pawns - this is tricky as transform gets overwritten */
+/* A more robust way would be to wrap pawns or apply animation to a pseudo-element */
+/* For now, let's assume the base scale animation is the primary goal. */
+/* If stacking + individual animation scaling is critical, JS might be needed to adjust transforms dynamically */
+.cell .pawn.movable:nth-child(1) { animation-name: pulseMovable1; }
+.cell .pawn.movable:nth-child(2) { animation-name: pulseMovable2; }
+.cell .pawn.movable:nth-child(3) { animation-name: pulseMovable3; }
+.cell .pawn.movable:nth-child(4) { animation-name: pulseMovable4; }
+
+@keyframes pulseMovable1 {
+  0% { transform: scale(1); } 50% { transform: scale(1.15); } 100% { transform: scale(1); }
+}
+@keyframes pulseMovable2 {
+  0% { transform: translate(3px, 3px) scale(1); } 50% { transform: translate(3px, 3px) scale(1.15); } 100% { transform: translate(3px, 3px) scale(1); }
+}
+@keyframes pulseMovable3 {
+  0% { transform: translate(-3px, -3px) scale(1); } 50% { transform: translate(-3px, -3px) scale(1.15); } 100% { transform: translate(-3px, -3px) scale(1); }
+}
+@keyframes pulseMovable4 {
+  0% { transform: translate(6px, -3px) scale(1); } 50% { transform: translate(6px, -3px) scale(1.15); } 100% { transform: translate(6px, -3px) scale(1); }
+}

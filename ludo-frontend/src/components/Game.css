@@ -1,0 +1,248 @@
+/* Game.css - Styles for Game Configuration Panel and elements */
+
+.game-active-container {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap; /* Allow wrapping for smaller screens if needed */
+  gap: 20px; /* Space between left and right columns */
+}
+
+.game-left-column {
+  flex-grow: 1;
+  /* min-width to prevent excessive squishing, adjust as needed */
+  min-width: 400px; 
+}
+
+.game-right-column {
+  display: flex;
+  flex-direction: column;
+  gap: 15px; /* Space between config panel and game log */
+  width: 300px; /* Fixed or max-width, adjust as needed */
+  padding: 10px;
+  border-left: 1px solid #eee; /* Visual separation */
+}
+
+.game-configuration-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px; /* Increased gap between sections */
+  padding: 15px;
+  border: 1px solid #ccc;
+  border-radius: 5px;
+  background-color: #f9f9f9;
+}
+
+.config-section {
+  padding: 10px;
+  border-bottom: 1px solid #eee;
+}
+.config-section:last-child {
+  border-bottom: none;
+}
+
+.config-section h5 {
+  margin-top: 0;
+  margin-bottom: 10px;
+  color: #333;
+}
+
+/* Game Settings (Creator) */
+.game-settings-area .form-group {
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column; /* Stack label and select */
+}
+
+.game-settings-area label {
+  margin-bottom: 5px;
+  font-weight: bold;
+  font-size: 0.9em;
+}
+
+.game-settings-area select {
+  padding: 8px;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+  font-size: 0.9em;
+}
+
+/* Color Selection */
+.color-options-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px; /* Space between color buttons */
+  margin-bottom: 10px;
+}
+
+.color-option-button {
+  padding: 10px 15px;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+  min-width: 80px; /* Ensure buttons have some width */
+  text-align: center;
+}
+
+.color-option-button:hover {
+  opacity: 0.8;
+}
+
+.color-option-button.Red { background-color: #d9534f; border-color: #d43f3a;}
+.color-option-button.Green { background-color: #5cb85c; border-color: #4cae4c;}
+.color-option-button.Yellow { background-color: #f0ad4e; border-color: #eea236; color: #333; /* Darker text for yellow */ }
+.color-option-button.Blue { background-color: #337ab7; border-color: #2e6da4;}
+
+.color-option-button.my-selection {
+  box-shadow: 0 0 8px 3px dodgerblue;
+  transform: scale(1.05);
+}
+
+.color-option-button.taken:not(.my-selection) {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background-color: #777 !important; /* Override specific color */
+  border-color: #555 !important;
+}
+
+.color-option-button span { /* For player name on taken button */
+  font-size: 0.8em;
+  display: block;
+  margin-top: 2px;
+}
+
+.player-color-choices {
+  margin-top: 15px;
+}
+.player-color-choices h6 {
+  margin-bottom: 5px;
+}
+.player-color-choices ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.player-color-choices li {
+  padding: 3px 0;
+  font-size: 0.9em;
+}
+
+/* Player Readiness */
+.player-readiness-area ul {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 10px 0;
+}
+.player-readiness-area li {
+  padding: 4px 0;
+  font-size: 0.9em;
+}
+.player-readiness-area li .ready-status-true {
+  color: green;
+  font-weight: bold;
+}
+.player-readiness-area li .ready-status-false {
+  color: #c00; /* Darker red */
+  font-weight: bold;
+}
+
+.confirm-readiness-area p, .start-game-button-area p {
+  margin-bottom: 10px;
+  font-style: italic;
+}
+.confirm-readiness-area .readiness-countdown {
+  font-weight: bold;
+  color: #d9534f; /* Bootstrap danger color */
+  font-size: 1.1em;
+}
+
+.confirm-readiness-area button,
+.start-game-button-area button {
+  padding: 10px 15px;
+  border: none;
+  border-radius: 4px;
+  background-color: #5cb85c; /* Bootstrap success color */
+  color: white;
+  font-size: 1em;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+.confirm-readiness-area button:hover,
+.start-game-button-area button:hover {
+  background-color: #4cae4c;
+}
+.confirm-readiness-area button:disabled {
+  background-color: #aaa;
+  cursor: not-allowed;
+}
+
+/* Ensure game log is styled to fit */
+.game-log-container {
+  /* max-height: 300px; /* Example, adjust as needed */
+  /* overflow-y: auto; */
+  /* border: 1px solid #ddd; */
+  /* padding: 10px; */
+  /* background-color: #fff; */
+  /* These might already be in App.css or similar, adjust as needed */
+}
+
+/* General class for form-like groups if needed more broadly */
+.form-group {
+  margin-bottom: 15px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 5px;
+  font-weight: bold;
+}
+
+.form-group input[type="text"],
+.form-group select {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  box-sizing: border-box; /* Important for width: 100% */
+}
+
+/* Basic button styling (can be overridden by more specific button styles) */
+.lobby-button, /* Re-use lobby button style if desired or make new base */
+.game-button { 
+  padding: 8px 12px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background-color: #f0f0f0;
+  cursor: pointer;
+  margin-right: 5px; /* Example spacing */
+}
+.game-button:hover {
+  background-color: #e0e0e0;
+}
+
+/* Player area styling - if it needs adjustment due to new layout */
+.player-areas-container {
+  /* display: flex; ... ensure it fits */
+}
+
+h4, h5, h6 { /* Basic styling for headings in config panel */
+    color: #333;
+}
+h4 { font-size: 1.2em; margin-bottom: 15px; border-bottom: 1px solid #ddd; padding-bottom: 5px;}
+h5 { font-size: 1.1em; margin-bottom: 10px; }
+h6 { font-size: 1em; margin-bottom: 8px; color: #555;}
+
+/* Responsive consideration: stack columns on smaller screens */
+@media (max-width: 768px) {
+  .game-active-container {
+    flex-direction: column;
+  }
+  .game-right-column {
+    width: 100%; /* Take full width */
+    border-left: none; /* Remove side border */
+    border-top: 1px solid #eee; /* Add top border for separation */
+    margin-top: 20px;
+  }
+}

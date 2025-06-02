@@ -1,0 +1,198 @@
+
+.lobby-container {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between; /* Changed from space-around */
+  align-items: flex-start;
+  padding: 20px;
+  max-width: 1200px; /* Adjusted max-width */
+  margin: 40px auto;
+  background-color: #f9f9f9;
+  gap: 20px; /* Added for spacing between children */
+  border-radius: 8px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  font-family: Arial, sans-serif;
+}
+
+.main-lobby-area {
+  flex: 2; /* Left column takes ~2/3 space */
+  display: flex;
+  flex-direction: column;
+  align-items: center; /* Center its children (the sections) */
+  /* margin-right: 20px; Removed, using gap on parent now */
+}
+
+.main-lobby-area h2 {
+  color: #333;
+  margin-bottom: 30px;
+  text-align: center;
+  width: 100%; /* Ensures h2 takes full width before centering text */
+}
+
+/* Styles for .create-game-section and .join-game-section (children of .main-lobby-area) */
+/* These already have the .lobby-section class, so we modify it */
+.lobby-section {
+  width: 100%; /* Sections take full width of their container (.main-lobby-area or .leaderboard-section) */
+  max-width: 550px; /* Max width for sections within .main-lobby-area */
+  padding: 20px;
+  margin-bottom: 20px;
+  background-color: #ffffff;
+  box-sizing: border-box; /* Added */
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+}
+
+.lobby-section h3 {
+  color: #555;
+  margin-top: 0;
+  margin-bottom: 15px;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 10px;
+}
+
+.form-group {
+  margin-bottom: 15px;
+  display: flex;
+  flex-direction: column;
+}
+
+.form-group label {
+  margin-bottom: 5px;
+  color: #666;
+  font-size: 0.9em;
+}
+
+.form-group select,
+.form-group input[type="text"] {
+  padding: 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 1em;
+}
+
+.lobby-button {
+  padding: 10px 15px;
+  font-size: 1em;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+  width: 100%;
+  margin-top: 10px;
+}
+
+.create-button {
+  background-color: #4CAF50; /* Green */
+}
+.create-button:hover {
+  background-color: #45a049;
+}
+
+.join-button {
+  background-color: #007bff; /* Blue */
+}
+.join-button:hover {
+  background-color: #0069d9;
+}
+
+.refresh-button {
+  background-color: #4CAF50; /* Green, matching create-button */
+  color: white;
+  padding: 8px 15px; /* Specific padding */
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9em;   /* Specific font size */
+  margin-bottom: 10px; /* Specific margin */
+  /* width: auto; /* Override width: 100% from .lobby-button if needed, or set specific width */
+  /* For now, let it inherit width: 100% from .lobby-button as per current structure */
+}
+
+.refresh-button:hover {
+  background-color: #45a049; /* Darker green */
+}
+
+.lobby-error {
+    color: red;
+    background-color: #ffe0e0;
+    border: 1px solid red;
+    padding: 10px;
+    border-radius: 4px;
+    margin-bottom: 20px;
+    width: calc(100% - 40px); /* Adjust for padding of parent */
+    text-align: center;
+}
+
+/* Leaderboard specific styles */
+.leaderboard-section {
+  flex: 1; /* Right column takes ~1/3 space */
+  /* max-width: 300px; Removed, width is now proportional */
+  min-width: 300px;   /* Adjusted min-width for leaderboard */
+  /* background-color, border, border-radius, padding, margin-bottom are already part of .lobby-section */
+  /* margin-left: 20px; Removed, using gap on parent now */
+}
+
+/* Ensure .lobby-section rules specific to leaderboard content are maintained if needed, */
+/* or that the general .lobby-section styling is sufficient. */
+/* The .leaderboard-section IS a .lobby-section, so it inherits those modified properties. */
+/* We might need to override max-width for the leaderboard if 550px is too wide for it. */
+.leaderboard-section.lobby-section { /* More specific selector to override max-width for leaderboard */
+    max-width: none; /* Leaderboard width controlled by flex and min-width */
+}
+
+.leaderboard-section h3 {
+  color: #555;
+  margin-top: 0;
+  margin-bottom: 15px;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 10px;
+}
+
+.refresh-leaderboard-button {
+  background-color: #5bc0de; /* Info Blue */
+  margin-bottom: 15px; /* Space below button */
+}
+.refresh-leaderboard-button:hover {
+  background-color: #31b0d5;
+}
+
+.leaderboard-list {
+  list-style-type: none; /* Removes default ol numbering */
+  padding-left: 0;
+  text-align: left;
+}
+
+.leaderboard-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 0.95em;
+}
+
+.leaderboard-item:last-child {
+  border-bottom: none;
+}
+
+.leaderboard-item span {
+  margin-right: 10px;
+}
+
+.leaderboard-item span:first-child { /* Rank */
+  font-weight: bold;
+  min-width: 25px; /* Ensure rank numbers align nicely */
+}
+.leaderboard-item span:nth-child(2) { /* Name */
+  flex-grow: 1; /* Allow name to take up available space */
+}
+.leaderboard-item span:last-child { /* Score */
+  font-style: italic;
+  color: #337ab7;
+}
+
+/* Ensure error messages in leaderboard also look consistent */
+.leaderboard-section .lobby-error {
+  width: calc(100% - 0px); /* Adjust if padding is different, now it's full width of its parent */
+  margin-top: 10px;
+}
