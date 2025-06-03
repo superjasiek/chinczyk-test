@@ -4,14 +4,13 @@ import Board from './Board';
 import Dice from './Dice';
 import PlayerArea from './PlayerArea';
 
-const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGameState, onReturnToLobby }) => {
+const Game = ({ gameId: propGameId, myPlayerName, initialGameState, onReturnToLobby }) => { // assignedPlayerColor removed
   // Comment removed as the log will be placed correctly after state declarations.
   console.log("[Game.js MOUNT] initialGameState received:", JSON.stringify(initialGameState, null, 2));
 
   const [gameState, setGameState] = useState(initialGameState);
-  const [myPlayerColor] = useState(assignedPlayerColor); // This is stable after initial assignment
-
-  const isCreator = myPlayerColor === initialGameState.gameCreatorColor; // Stable based on initial props
+  const [myPlayerColor, setMyPlayerColor] = useState(null); // Changed from useState(assignedPlayerColor)
+  const [isCreator, setIsCreator] = useState(false); // Changed from const
 
   const [numPlayers, setNumPlayers] = useState(initialGameState.num_players || 2);
   const [targetVictories, setTargetVictories] = useState(initialGameState.targetVictories || 1);
@@ -43,8 +42,30 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
   useEffect(() => { overallWinnerInfoRef.current = overallWinnerInfo; }, [overallWinnerInfo]);
   // myPlayerColor, assignedPlayerColor, myPlayerName are props or derived from props and stable or handled by their own refs if necessary
   useEffect(() => { myPlayerColorRef.current = myPlayerColor; }, [myPlayerColor]);
-  useEffect(() => { assignedPlayerColorRef.current = assignedPlayerColor; }, [assignedPlayerColor]);
+  // useEffect(() => { assignedPlayerColorRef.current = assignedPlayerColor; }, [assignedPlayerColor]); // assignedPlayerColor prop removed
   useEffect(() => { myPlayerNameRef.current = myPlayerName; }, [myPlayerName]);
+
+  useEffect(() => {
+    if (initialGameState && initialGameState.playersSetup && socket.id) {
+      const selfInSetup = initialGameState.playersSetup.find(p => p.playerId === socket.id);
+      if (selfInSetup && selfInSetup.color) {
+        setMyPlayerColor(selfInSetup.color);
+        console.log(`[Game.js EFFECT_SELF_INFO] Set myPlayerColor to: ${selfInSetup.color} for socket.id: ${socket.id}`);
+      } else if (selfInSetup) {
+        console.log(`[Game.js EFFECT_SELF_INFO] Found self in setup for socket.id: ${socket.id}, but color is not yet set:`, selfInSetup.color);
+      } else {
+        console.warn(`[Game.js EFFECT_SELF_INFO] Could not find self in playersSetup for socket.id: ${socket.id}. playersSetup:`, JSON.stringify(initialGameState.playersSetup));
+      }
+
+      if (initialGameState.creatorPlayerId === socket.id) {
+        setIsCreator(true);
+        console.log(`[Game.js EFFECT_SELF_INFO] This client IS the creator. Socket.id: ${socket.id}`);
+      } else {
+        setIsCreator(false);
+        console.log(`[Game.js EFFECT_SELF_INFO] This client IS NOT the creator. Socket.id: ${socket.id}, Creator ID: ${initialGameState.creatorPlayerId}`);
+      }
+    }
+  }, [initialGameState, socket.id]); // Rerun if initialGameState or socket.id changes
 
 
   const addMessage = useCallback((content, type = 'event', senderColor = null, senderName = null) => {
@@ -147,19 +168,19 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
     console.log('[Game.js DEBUG] MAIN_EFFECT_RUN attempting. GameID Prop:', propGameId, 'Socket Connected:', socket.connected);
     if (!propGameId) {
       console.log('[Game.js DEBUG] MAIN_EFFECT_SKIPPED: propGameId is missing.');
-      return;
+      return; 
     }
     if (!socket.connected) {
       console.log('[Game.js DEBUG] MAIN_EFFECT_SKIPPED: socket is not connected.');
-      // Optionally, you might want to return here or set up a one-time listener for 'connect'
+      // Optionally, you might want to return here or set up a one-time listener for 'connect' 
       // to then run the main effect logic. For now, just logging and returning is fine for diagnostics.
       return;
     }
     console.log('[Game.js DEBUG] MAIN_EFFECT_PROCEEDING with listener setup. GameID:', propGameId);
     // The existing MAIN_EFFECT_RUN log is removed by this change as the new "attempting" and "proceeding" logs cover it.
     // Unused local consts removed:
-    // const currentMyPlayerColor = myPlayerColorRef.current;
-    // const currentMyPlayerName = myPlayerNameRef.current;
+    // const currentMyPlayerColor = myPlayerColorRef.current; 
+    // const currentMyPlayerName = myPlayerNameRef.current; 
     // const currentAssignedPlayerColor = assignedPlayerColorRef.current; // from prop
 
     // Initial join message - use refs for player name/color
@@ -247,7 +268,7 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
     const handleActionError = (data) => addMessage(`Error: ${data.message}`);
     const handlePlayerJoined = (data) => addMessage(`${data.playerName || data.playerColor} (${data.socketId ? data.socketId.substring(0,5) : 'N/A'}) has joined the game!`);
     const handlePlayerDisconnected = (data) => addMessage(`${data.playerName || data.playerColor} has disconnected.`);
-
+    
     const handleRolledThreeSixes = (data) => {
         const currentGameState = gameStateRef.current; // Use ref
         let playerName = (currentGameState && currentGameState.playerNames && currentGameState.playerNames[data.playerColor]) || data.playerColor;
@@ -273,7 +294,7 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
         setRoundOverInfo(null); // This will update roundOverInfoRef
         addMessage(data.message || "Next round has started!");
     };
-
+    
     const handleNewChatMessage = (chatData) => {
         const currentGameState = gameStateRef.current; // Use ref
         const senderDisplayName = (currentGameState && currentGameState.playerNames && currentGameState.playerNames[chatData.senderColor]) || chatData.senderColor;
@@ -334,14 +355,14 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
     console.log('[Game.js DEBUG] HIRC_LISTENER_ATTACHED for game:', propGameId);
     socket.on('playerReadinessUpdate', handlePlayerReadinessUpdate);
     socket.on('readinessCheckOutcome', handleReadinessCheckOutcome);
-
+    
     // Keydown listener for spacebar to roll dice
     // This handler uses setGameState with a callback, which is fine.
     // It also accesses myPlayerColorRef, roundOverInfoRef, overallWinnerInfoRef.
     const handleKeyDown = (event) => {
         if (event.target.tagName === 'INPUT') return;
         if (event.code !== 'Space' && event.key !== ' ') return;
-
+        
         // Access refs inside this handler
         const currentMyPlayerColor = myPlayerColorRef.current;
         const currentRoundOverInfo = roundOverInfoRef.current;
@@ -358,11 +379,11 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
             const isMyTurnForSpace = currentMyPlayerColor === actualCurrentPlayerForSpace;
             const diceDisabledForSpace = !isMyTurnForSpace || currentGs.awaitingMove || (currentGs.dice_roll !== null && !currentGs.mustRollAgain);
             const canRollForSpace = isMyTurnForSpace && !currentGs.awaitingMove && !diceDisabledForSpace && !currentRoundOverInfo && !currentOverallWinnerInfo;
-
+            
             if (canRollForSpace) {
                 event.preventDefault();
                 // handleRollDice is stable and uses refs itself
-                handleRollDice();
+                handleRollDice(); 
             }
             return currentGs; // Return unchanged state if no roll
         });
@@ -396,7 +417,7 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
   // initialGameState is used for some setup conditions (like isCreator) that are fixed once component mounts.
   // myPlayerName, assignedPlayerColor are props, their refs are updated.
   // addMessage is stable and used by handlers.
-  }, [propGameId, socket.connected, handleRollDice]);
+  }, [propGameId, socket.connected, handleRollDice]); 
   // Note: addMessage could be added back if handlers defined outside this effect need it as a prop,
   // but since handlers are inside and addMessage is stable via useCallback, it's accessible.
 
@@ -418,7 +439,7 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
 
   // This is the correct single location for RENDER START log, after all hooks.
   console.log('[Game.js RENDER START] GameID Prop:', propGameId, 'Socket ID:', socket.id, 'Socket Connected:', socket.connected, 'AwaitingConfirm:', awaitingReadinessConfirm);
-
+  
   // Add this logging before the loading condition:
   console.log("[Game.js PRE-LOAD-CHECK] current gameState:", JSON.stringify(gameState, null, 2));
   if (gameState) {
@@ -458,7 +479,7 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
   let currentPlayerColor = 'N/A';
   let currentPlayerDisplayName = 'N/A';
   let isMyTurn = false;
-  const effectivePlayerColor = myPlayerColor || assignedPlayerColor; // Use the color assigned to this client
+  const effectivePlayerColor = myPlayerColor; // Use the color assigned to this client
 
   // Only attempt to determine current player if not in setup phase and gameState is valid
   if (gameState && gameState.status !== 'setup') {
@@ -480,6 +501,7 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
   }
   // For 'setup' phase, the defaults 'N/A', 'N/A', and false remain, and no warning is logged from this block.
   // END OF MAIN UI LOGIC
+  console.log(`[Game.js TURN_CALC] GameID: ${propGameId}, Client's Color (effectivePlayerColor): ${effectivePlayerColor}, Current Turn Color (currentPlayerColor): ${currentPlayerColor}, IsMyTurn: ${isMyTurn}, Game Status: ${gameState?.status}, CPI: ${gameState?.current_player_index}, ActiveColors: ${JSON.stringify(gameState?.activePlayerColors)}`);
 
   const threeTryInfo = (gameState && gameState.status !== 'setup' && gameState.board && gameState.board.players && gameState.board.players[effectivePlayerColor]?.home_area_count === 4 && isMyTurn && gameState.threeTryAttempts > 0 && gameState.threeTryAttempts < 3 && gameState.dice_roll !== 6)
     ? `(Attempt ${gameState.threeTryAttempts} of 3 to roll a 6)`
@@ -535,16 +557,16 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
 
   // Add this logging line:
   if (gameState) { // Ensure gameState is not null before accessing its properties
-    console.log(`[Game.js RENDER] current_player_index: ${gameState.current_player_index}, dice_roll: ${gameState.dice_roll}, awaitingMove: ${gameState.awaitingMove}, calculated isMyTurn: ${isMyTurn}, clientMovablePawnIds: ${JSON.stringify(clientMovablePawnIds)}, playerNames: ${JSON.stringify(gameState.playerNames)}, currentPlayerDisplayName: ${currentPlayerDisplayName}, isCreator: ${isCreator}, currentIsSetupPhase: ${currentIsSetupPhase}`);
+    console.log(`[Game.js RENDER] CPI: ${gameState.current_player_index}, Dice: ${gameState.dice_roll}, AwaitingMv: ${gameState.awaitingMove}, EffectiveColor: ${effectivePlayerColor}, CalcIsMyTurn: ${isMyTurn}, MovablePawns: ${JSON.stringify(clientMovablePawnIds)}, Names: ${JSON.stringify(gameState.playerNames)}, CurrPlayerName: ${currentPlayerDisplayName}, isCreator: ${isCreator}, isSetup: ${currentIsSetupPhase}`);
   } else {
     // Log current player display name even if gameState is null, as it might have a default.
-    console.log(`[Game.js RENDER] gameState is null or undefined at render time. currentPlayerDisplayName: ${currentPlayerDisplayName}`);
+    console.log(`[Game.js RENDER] gameState is null or undefined at render time. currentPlayerDisplayName: ${currentPlayerDisplayName}, EffectiveColor: ${effectivePlayerColor}`);
   }
 
   return (
     <div className="game-active-container">
       <h2 className="game-title">Chińczyk: {propGameId}</h2>
-      <p className="player-info">Jesteś {myPlayerName || 'Player'} (<span style={{color: assignedPlayerColor || myPlayerColor, fontWeight:'bold', border:`2px solid ${assignedPlayerColor || myPlayerColor}`, padding: '2px 4px', borderRadius: '4px'}}>{assignedPlayerColor || myPlayerColor || 'Wybieram...'}</span>)</p>
+      <p className="player-info">Jesteś {myPlayerNameRef.current || 'Player'} (<span style={{color: myPlayerColor, fontWeight:'bold', border: myPlayerColor ? `2px solid ${myPlayerColor}` : 'none', padding: '2px 4px', borderRadius: '4px'}}>{myPlayerColor || 'Wybieram...'}</span>)</p>
       
       {isWaitingForPlayers && !currentIsSetupPhase && ( // Only show this if not in setup
         <p className="waiting-players-message">
