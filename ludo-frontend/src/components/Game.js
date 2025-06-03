@@ -43,27 +43,76 @@ const Game = ({ gameId: propGameId, myPlayerName, initialGameState, onReturnToLo
   useEffect(() => { myPlayerColorRef.current = myPlayerColor; }, [myPlayerColor]);
   useEffect(() => { myPlayerNameRef.current = myPlayerName; }, [myPlayerName]);
 
-  useEffect(() => {
-    if (initialGameState && initialGameState.playersSetup && socket.id) {
-      const selfInSetup = initialGameState.playersSetup.find(p => p.playerId === socket.id);
-      if (selfInSetup && selfInSetup.color) {
-        setMyPlayerColor(selfInSetup.color);
-        console.log(`[Game.js EFFECT_SELF_INFO] Set myPlayerColor to: ${selfInSetup.color} for socket.id: ${socket.id}`);
-      } else if (selfInSetup) {
-        console.log(`[Game.js EFFECT_SELF_INFO] Found self in setup for socket.id: ${socket.id}, but color is not yet set:`, selfInSetup.color);
-      } else {
-        console.warn(`[Game.js EFFECT_SELF_INFO] Could not find self in playersSetup for socket.id: ${socket.id}. playersSetup:`, JSON.stringify(initialGameState.playersSetup));
-      }
+useEffect(() => {
+  // Log entry points
+  console.log('[Game.js CREATOR/COLOR CHECK] Running effect. initialGameState valid:', !!initialGameState, 'socket.id valid:', !!socket?.id);
+  if (initialGameState) {
+    console.log('[Game.js CREATOR/COLOR CHECK] initialGameState.gameCreatorId:', initialGameState.gameCreatorId, 'initialGameState.playersSetup exists:', !!initialGameState.playersSetup);
+  }
 
-      if (initialGameState.creatorPlayerId === socket.id) {
-        setIsCreator(true);
-        console.log(`[Game.js EFFECT_SELF_INFO] This client IS the creator. Socket.id: ${socket.id}`);
-      } else {
-        setIsCreator(false);
-        console.log(`[Game.js EFFECT_SELF_INFO] This client IS NOT the creator. Socket.id: ${socket.id}, Creator ID: ${initialGameState.creatorPlayerId}`);
-      }
+
+  // Determine isCreator
+  if (initialGameState && initialGameState.gameCreatorId && socket.id) {
+    if (initialGameState.gameCreatorId === socket.id) {
+      setIsCreator(true);
+      console.log(`[Game.js CREATOR CHECK] setIsCreator(true). Socket.id: ${socket.id}`);
+    } else {
+      setIsCreator(false);
+      console.log(`[Game.js CREATOR CHECK] setIsCreator(false). Socket.id: ${socket.id}, Creator ID: ${initialGameState.gameCreatorId}`);
     }
-  }, [initialGameState, socket.id]); // Rerun if initialGameState or socket.id changes
+  } else {
+    setIsCreator(false); // Default to false if essential info for creator check is missing
+    console.log('[Game.js CREATOR CHECK] Conditions for isCreator not fully met. initialGameState:', !!initialGameState, 'initialGameState.gameCreatorId:', !!initialGameState?.gameCreatorId, 'socket.id:', !!socket?.id);
+  }
+
+  // Determine myPlayerColor (relies on playersSetup)
+  if (initialGameState && initialGameState.playersSetup && socket.id) {
+    const selfInSetup = initialGameState.playersSetup.find(p => p.playerId === socket.id);
+    if (selfInSetup && selfInSetup.color) {
+      setMyPlayerColor(selfInSetup.color);
+      console.log(`[Game.js EFFECT_SELF_INFO] Set myPlayerColor to: ${selfInSetup.color} for socket.id: ${socket.id}`);
+    } else if (selfInSetup) {
+      // Player is in setup, but color not chosen yet or not available
+      console.log(`[Game.js EFFECT_SELF_INFO] Found self in playersSetup for socket.id: ${socket.id}, but color is not set:`, selfInSetup?.color);
+    } else {
+      // Player is not in playersSetup array yet.
+      console.warn(`[Game.js EFFECT_SELF_INFO] Could not find self in playersSetup for socket.id: ${socket.id}. playersSetup:`, JSON.stringify(initialGameState.playersSetup));
+    }
+  } else {
+    // playersSetup might not be available yet, or initialGameState/socket.id is missing
+    console.log('[Game.js PLAYER_COLOR_CHECK] Conditions for myPlayerColor not fully met. initialGameState:', !!initialGameState, 'initialGameState.playersSetup:', !!initialGameState?.playersSetup, 'socket.id:', !!socket?.id);
+  }
+}, [initialGameState, socket.id]);
+
+// useEffect to update myPlayerColor from gameState, which reflects server updates (e.g., after color selection)
+useEffect(() => {
+  console.log('[Game.js COLOR_FROM_GAMESTATE_EFFECT] Running. gameState valid:', !!gameState, 'socket.id valid:', !!socket?.id);
+  if (gameState && gameState.playersSetup && socket.id) {
+    const selfInSetup = gameState.playersSetup.find(p => p.playerId === socket.id);
+    if (selfInSetup && selfInSetup.color) {
+      // Only set if the color is different from the current myPlayerColor state, or if myPlayerColor is null
+      if (myPlayerColor !== selfInSetup.color) {
+        setMyPlayerColor(selfInSetup.color);
+        console.log(`[Game.js COLOR_FROM_GAMESTATE_EFFECT] Updated myPlayerColor to: ${selfInSetup.color} from gameState.`);
+      } else {
+        console.log(`[Game.js COLOR_FROM_GAMESTATE_EFFECT] myPlayerColor is already ${selfInSetup.color}. No update needed from gameState.`);
+      }
+    } else if (selfInSetup) {
+      console.log(`[Game.js COLOR_FROM_GAMESTATE_EFFECT] Found self in gameState.playersSetup, but color is not set:`, selfInSetup?.color);
+    } else {
+      console.log(`[Game.js COLOR_FROM_GAMESTATE_EFFECT] Could not find self in gameState.playersSetup using socket.id: ${socket.id}.`);
+    }
+  } else {
+    let reason = [];
+    if (!gameState) reason.push("gameState is missing");
+    if (gameState && !gameState.playersSetup) reason.push("gameState.playersSetup is missing");
+    if (!socket.id) reason.push("socket.id is missing");
+    console.log(`[Game.js COLOR_FROM_GAMESTATE_EFFECT] Conditions not met. Reasons: ${reason.join(', ')}.`);
+  }
+  // Adding myPlayerColor to dependencies:
+  // If myPlayerColor is included, the effect runs whenever myPlayerColor changes.
+  // The check `if (myPlayerColor !== selfInSetup.color)` prevents an infinite loop.
+}, [gameState, socket.id, myPlayerColor]);
 
 
   const addMessage = useCallback((content, type = 'event', senderColor = null, senderName = null) => {
@@ -517,6 +566,8 @@ const Game = ({ gameId: propGameId, myPlayerName, initialGameState, onReturnToLo
   // Game status for UI rendering (e.g., hiding setup controls after game starts)
   // This relies on gameState being updated. initialIsSetupPhase is based on the prop.
   const currentIsSetupPhase = gameState.status === 'setup';
+  // Add this log
+  console.log('[Game.js SETUP PHASE CHECK] gameState.status:', gameState?.status, 'currentIsSetupPhase:', currentIsSetupPhase);
 
   const handleStartGame = () => {
     console.log("Creator requests game start. Settings:", { numPlayers, targetVictories });
