@@ -33,7 +33,6 @@ const Game = ({ gameId: propGameId, myPlayerName, initialGameState, onReturnToLo
   const myPlayerColorRef = useRef(myPlayerColor); // Though myPlayerColor is stable from useState(assignedPlayerColor)
   const roundOverInfoRef = useRef(roundOverInfo);
   const overallWinnerInfoRef = useRef(overallWinnerInfo);
-  const assignedPlayerColorRef = useRef(assignedPlayerColor);
   const myPlayerNameRef = useRef(myPlayerName);
   // No messagesRef needed as addMessage is stable and handles messages state
 
@@ -42,7 +41,6 @@ const Game = ({ gameId: propGameId, myPlayerName, initialGameState, onReturnToLo
   useEffect(() => { overallWinnerInfoRef.current = overallWinnerInfo; }, [overallWinnerInfo]);
   // myPlayerColor, assignedPlayerColor, myPlayerName are props or derived from props and stable or handled by their own refs if necessary
   useEffect(() => { myPlayerColorRef.current = myPlayerColor; }, [myPlayerColor]);
-  // useEffect(() => { assignedPlayerColorRef.current = assignedPlayerColor; }, [assignedPlayerColor]); // assignedPlayerColor prop removed
   useEffect(() => { myPlayerNameRef.current = myPlayerName; }, [myPlayerName]);
 
   useEffect(() => {
