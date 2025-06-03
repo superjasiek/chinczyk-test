@@ -238,7 +238,126 @@ describe("Ludo Server Basic Functionality", () => {
          clientSocket1.on("actionError", (err) => {
             done(new Error("movePawn failed: " + err.message));
         });
+    }); // This closes clientSocket1.on("gameCreated", (gameData) => { ... });
+  }); // This closes test("should allow a player to move a pawn after rolling", (done) => { ... });
+
+  test("should correctly initialize readiness check when creator starts game with settings", async () => {
+    let gameId;
+    let creatorGameState;
+    let joinerGameState;
+
+    // 1. Connect clientSocket1 (Creator) - already done in beforeEach
+
+    // 2. Creator emits createGame
+    await new Promise((resolve, reject) => {
+      clientSocket1.once("gameCreated", (data) => {
+        expect(data.gameId).toBeDefined();
+        expect(data.gameState).toBeDefined();
+        gameId = data.gameId;
+        creatorGameState = data.gameState;
+        expect(activeGamesRef[gameId]).toBeDefined();
+        expect(activeGamesRef[gameId].creatorPlayerId).toBe(clientSocket1.id);
+        resolve();
+      });
+      clientSocket1.emit("createGame", { playerName: "Creator" });
     });
 
+    // 4. Connect clientSocket2 (Joiner)
+    await new Promise((resolve, reject) => {
+      const socketUrl = `http://localhost:${port}`;
+      clientSocket2 = new Client(socketUrl, { forceNew: true, transports: ['websocket'] });
+      clientSocket2.on("connect", () => resolve());
+      clientSocket2.on("connect_error", (err) => {
+        console.error("Client 2 connection error in test:", err.message);
+        reject(err);
+      });
+    });
 
+    // 5. Joiner emits joinGame
+    const joinerPromise = new Promise((resolve) => {
+        clientSocket2.once("joinedGame", (data) => {
+            expect(data.gameId).toBe(gameId);
+            expect(data.gameState).toBeDefined();
+            joinerGameState = data.gameState;
+            resolve();
+        });
+    });
+    const creatorUpdateOnJoinPromise = new Promise((resolve) => {
+        clientSocket1.once("gameStateUpdate", (data) => {
+            creatorGameState = data.gameState;
+            resolve();
+        });
+    });
+    clientSocket2.emit("joinGame", { gameId, playerName: "Joiner" });
+    await Promise.all([joinerPromise, creatorUpdateOnJoinPromise]);
+
+    expect(activeGamesRef[gameId].playersSetup.filter(p => p.playerId !== null).length).toBe(2);
+
+    // 6. Creator (clientSocket1) emits selectColor
+    await new Promise((resolve) => {
+        clientSocket1.once("gameStateUpdate", (data) => {
+            creatorGameState = data.gameState;
+            const creatorPlayerSetup = creatorGameState.playersSetup.find(p => p.playerId === clientSocket1.id);
+            expect(creatorPlayerSetup.color).toBe("Red");
+            resolve();
+        });
+        clientSocket1.emit("selectColor", { gameId, color: "Red" });
+    });
+
+    // 7. Joiner (clientSocket2) emits selectColor
+    await new Promise((resolve) => {
+        clientSocket2.once("gameStateUpdate", (data) => {
+            joinerGameState = data.gameState;
+             const joinerPlayerSetup = joinerGameState.playersSetup.find(p => p.playerId === clientSocket2.id);
+            expect(joinerPlayerSetup.color).toBe("Green");
+        });
+        clientSocket1.once("gameStateUpdate", (data) => {
+            creatorGameState = data.gameState;
+            const joinerPlayerSetupInCreatorView = creatorGameState.playersSetup.find(p => p.playerId === clientSocket2.id);
+            expect(joinerPlayerSetupInCreatorView.color).toBe("Green");
+            resolve();
+        });
+        clientSocket2.emit("selectColor", { gameId, color: "Green" });
+    });
+
+    expect(activeGamesRef[gameId].playersSetup.find(p => p.playerId === clientSocket1.id).color).toBe("Red");
+    expect(activeGamesRef[gameId].playersSetup.find(p => p.playerId === clientSocket2.id).color).toBe("Green");
+
+    // 8. Creator (clientSocket1) emits creatorRequestsGameStart with settings
+    const settingsToApply = { numPlayers: 2, targetVictories: 1 };
+    const creatorListenPromise = new Promise((resolve) => {
+        clientSocket1.once("initiateReadinessCheck", (data) => {
+            expect(data.timeout).toBeDefined();
+            resolve();
+        });
+    });
+    const joinerListenPromise = new Promise((resolve) => {
+        clientSocket2.once("initiateReadinessCheck", (data) => {
+            expect(data.timeout).toBeDefined();
+            resolve();
+        });
+    });
+
+    clientSocket1.emit("creatorRequestsGameStart", { gameId, settings: settingsToApply });
+
+    await Promise.all([creatorListenPromise, joinerListenPromise]);
+
+    // 9. Assertions
+    const finalGameState = activeGamesRef[gameId];
+    expect(finalGameState.status).toBe('waitingForReady');
+    expect(finalGameState.num_players_setting).toBe(settingsToApply.numPlayers);
+    expect(finalGameState.targetVictories_setting).toBe(settingsToApply.targetVictories);
+
+    const playersInSetup = finalGameState.playersSetup;
+    const creatorDetails = playersInSetup.find(p => p.playerId === clientSocket1.id);
+    const joinerDetails = playersInSetup.find(p => p.playerId === clientSocket2.id);
+
+    expect(creatorDetails).toBeDefined();
+    expect(creatorDetails.playerName).toBe("Creator");
+    expect(creatorDetails.color).toBe("Red");
+
+    expect(joinerDetails).toBeDefined();
+    expect(joinerDetails.playerName).toBe("Joiner");
+    expect(joinerDetails.color).toBe("Green");
+  });
 });
