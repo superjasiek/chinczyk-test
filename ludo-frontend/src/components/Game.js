@@ -684,8 +684,6 @@ useEffect(() => {
       </div>
 
       <div className="game-right-column">
-        {/* Add this log */}
-        console.log('[Game.js CREATOR CONTROLS RENDER CHECK] isCreator:', isCreator, 'currentIsSetupPhase:', currentIsSetupPhase);
         {isCreator && currentIsSetupPhase && (
           <div className="game-setup-controls">
             <h4>Game Settings (Creator)</h4>
