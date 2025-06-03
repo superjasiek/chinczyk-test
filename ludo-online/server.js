@@ -353,14 +353,27 @@ io.on('connection', (socket) => {
   });
 
   socket.on('creatorRequestsGameStart', (data) => {
-    const { gameId } = data; // Settings are now part of the game instance via creatorFinalizeSettings
+    const { gameId, settings } = data; // Destructure settings
     const game = activeGames[gameId];
 
     if (!game) return socket.emit('actionError', { message: 'Game not found.' });
     if (socket.id !== game.creatorPlayerId) return socket.emit('actionError', { message: 'Only creator can start the game.' });
     if (game.status !== 'setup') return socket.emit('actionError', { message: 'Game not in setup phase.' });
 
-    // Preconditions for starting readiness check (already in ludoGame.initiateReadinessCheck)
+    // If settings are provided, attempt to set them
+    if (settings && settings.numPlayers && settings.targetVictories) {
+      const setResult = ludoGameLogic.setGameParameters(game, settings.numPlayers, settings.targetVictories, socket.id);
+      if (!setResult.success) {
+        // Emit error and return if settings are invalid or could not be set
+        socket.emit('actionError', { message: setResult.error || 'Invalid game settings provided.' });
+        return; // Stop further execution
+      }
+      // If settings were successfully applied, the game state will be updated by setGameParameters.
+      // We can optionally emit a gameStateUpdate here if setGameParameters doesn't already do it sufficiently for all clients.
+      // For now, assume setGameParameters handles necessary emissions or the subsequent gameStateUpdate for readiness check is enough.
+    }
+
+    // Proceed with readiness check
     const readinessCheckResult = ludoGameLogic.initiateReadinessCheck(game);
 
     if (!readinessCheckResult.success) {
@@ -373,10 +386,12 @@ io.on('connection', (socket) => {
     }
     game.readinessTimerId = setTimeout(() => handleReadinessTimeout(gameId, io), READINESS_TIMEOUT_SECONDS * 1000);
     
-    io.to(gameId).emit('initiateReadinessCheck', { 
+    const payload = {
         timeout: READINESS_TIMEOUT_SECONDS, 
         initialReadyStatus: ludoGameLogic.getReadyPlayersStatus(game) 
-    });
+    };
+    console.log(`[${gameId}] Emitting 'initiateReadinessCheck'. Payload: `, payload);
+    io.to(gameId).emit('initiateReadinessCheck', payload);
     io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) }); // Reflects status change to 'waitingForReady'
   });
 

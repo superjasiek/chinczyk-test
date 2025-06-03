@@ -1,126 +1,136 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react'; // Added useRef
 import { socket } from '../socket';
 import Board from './Board';
 import Dice from './Dice';
 import PlayerArea from './PlayerArea';
 
 const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGameState, onReturnToLobby }) => {
+  // Comment removed as the log will be placed correctly after state declarations.
   console.log("[Game.js MOUNT] initialGameState received:", JSON.stringify(initialGameState, null, 2));
-  // Assuming initialGameState includes gameCreatorColor and status
-  // For development, you might mock them if not available from backend yet:
-  // const mockInitialGameState = { ...initialGameState, gameCreatorColor: 'Red', status: 'setup' };
-  // const [gameState, setGameState] = useState(mockInitialGameState);
-  // const { gameCreatorColor, status: initialStatus } = mockInitialGameState;
 
   const [gameState, setGameState] = useState(initialGameState);
-  const [myPlayerColor] = useState(assignedPlayerColor);
+  const [myPlayerColor] = useState(assignedPlayerColor); // This is stable after initial assignment
 
-  // Determine if the current player is the creator and if it's the setup phase
-  // These should ideally be based on initialGameState props that don't change.
-  const isCreator = myPlayerColor === initialGameState.gameCreatorColor;
-  // const initialIsSetupPhase = initialGameState.status === 'setup'; // Removed as unused
+  const isCreator = myPlayerColor === initialGameState.gameCreatorColor; // Stable based on initial props
 
-  // State for game settings, controlled by the creator
-  const [numPlayers, setNumPlayers] = useState(initialGameState.num_players || 2); // Default or from initial game state
-  const [targetVictories, setTargetVictories] = useState(initialGameState.targetVictories || 1); // Default or from initial game state
+  const [numPlayers, setNumPlayers] = useState(initialGameState.num_players || 2);
+  const [targetVictories, setTargetVictories] = useState(initialGameState.targetVictories || 1);
   
-  const availableColors = ["Red", "Green", "Yellow", "Blue"]; // Available colors for selection
+  const availableColors = ["Red", "Green", "Yellow", "Blue"];
 
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState([]); // messages state itself is not used in main useEffect deps
   const [clientMovablePawnIds, setClientMovablePawnIds] = useState([]);
   const [chatInputValue, setChatInputValue] = useState('');
   const [roundOverInfo, setRoundOverInfo] = useState(null);
   const [overallWinnerInfo, setOverallWinnerInfo] = useState(null);
 
-  // State for Readiness Confirmation
   const [awaitingReadinessConfirm, setAwaitingReadinessConfirm] = useState(false);
   const [readinessTimer, setReadinessTimer] = useState(0);
-  const [readyPlayersStatus, setReadyPlayersStatus] = useState({}); // E.g., { 'playerId1': true, 'playerId2': false }
+  const [readyPlayersStatus, setReadyPlayersStatus] = useState({});
   const [readinessConfirmedBySelf, setReadinessConfirmedBySelf] = useState(false);
+
+  // Refs for state/props accessed in socket handlers
+  const gameStateRef = useRef(gameState);
+  const myPlayerColorRef = useRef(myPlayerColor); // Though myPlayerColor is stable from useState(assignedPlayerColor)
+  const roundOverInfoRef = useRef(roundOverInfo);
+  const overallWinnerInfoRef = useRef(overallWinnerInfo);
+  const assignedPlayerColorRef = useRef(assignedPlayerColor);
+  const myPlayerNameRef = useRef(myPlayerName);
+  // No messagesRef needed as addMessage is stable and handles messages state
+
+  useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
+  useEffect(() => { roundOverInfoRef.current = roundOverInfo; }, [roundOverInfo]);
+  useEffect(() => { overallWinnerInfoRef.current = overallWinnerInfo; }, [overallWinnerInfo]);
+  // myPlayerColor, assignedPlayerColor, myPlayerName are props or derived from props and stable or handled by their own refs if necessary
+  useEffect(() => { myPlayerColorRef.current = myPlayerColor; }, [myPlayerColor]);
+  useEffect(() => { assignedPlayerColorRef.current = assignedPlayerColor; }, [assignedPlayerColor]);
+  useEffect(() => { myPlayerNameRef.current = myPlayerName; }, [myPlayerName]);
+
 
   const addMessage = useCallback((content, type = 'event', senderColor = null, senderName = null) => {
       setMessages(prevMessages => [
-          {
-              type, content, timestamp: new Date().toISOString(),
-              displayTimestamp: new Date().toLocaleTimeString(),
-              senderColor, senderName
-          },
-          ...prevMessages.slice(0, 49) // Keep up to 50 messages
+          { type, content, timestamp: new Date().toISOString(), displayTimestamp: new Date().toLocaleTimeString(), senderColor, senderName },
+          ...prevMessages.slice(0, 49)
       ]);
   }, []); // setMessages is stable
 
-  // =======================================================================
-  // THIS IS THE DEBUG LOGGING BLOCK - Placed at the top-level of the component
-  // =======================================================================
+  // Debug logging block - uses gameState directly, so it will re-run when gameState changes. This is fine.
   useEffect(() => {
-    if (gameState && gameState.current_player_index != null && gameState.activePlayerColors && gameState.players && myPlayerColor) {
-      const clientMyPlayerColor = myPlayerColor;
-      const clientCurrentPlayerIndex = gameState.current_player_index;
-      const clientActivePlayerColors = gameState.activePlayerColors;
-      const clientPlayersCapacityList = gameState.players;
+    const currentGameState = gameStateRef.current; // Use ref for consistency if preferred, though direct gameState is fine here
+    const currentMyPlayerColor = myPlayerColorRef.current;
 
+    if (currentGameState && currentGameState.current_player_index != null && currentGameState.activePlayerColors && currentGameState.players && currentMyPlayerColor) {
+      const clientMyPlayerColor = currentMyPlayerColor;
+      const clientCurrentPlayerIndex = currentGameState.current_player_index;
+      const clientActivePlayerColors = currentGameState.activePlayerColors;
+      const clientPlayersCapacityList = currentGameState.players;
       let logCurrentPlayerColor = "N/A_Debug_Init";
       let logIsMyTurn = false;
-
-      if (clientActivePlayerColors && clientActivePlayerColors.length > 0) { // Check if activePlayerColors is not undefined and not empty
+      if (clientActivePlayerColors && clientActivePlayerColors.length > 0) {
           const activePlayerIndex = clientCurrentPlayerIndex % clientActivePlayerColors.length;
           logCurrentPlayerColor = clientActivePlayerColors[activePlayerIndex];
           logIsMyTurn = clientMyPlayerColor === logCurrentPlayerColor;
       } else if (clientPlayersCapacityList && clientPlayersCapacityList.length > 0 && clientCurrentPlayerIndex < clientPlayersCapacityList.length) {
-          // This console.warn is for the browser console, not the in-game log
-          console.warn("[Game.js DEBUG ME] Using fallback (gameState.players) for logCurrentPlayerColor determination. ActivePlayerColors was empty or undefined.");
+          console.warn("[Game.js DEBUG ME] Using fallback (gameState.players) for logCurrentPlayerColor determination.");
           logCurrentPlayerColor = clientPlayersCapacityList[clientCurrentPlayerIndex];
           logIsMyTurn = clientMyPlayerColor === logCurrentPlayerColor;
       } else {
-          // This console.warn is for the browser console
           if (clientPlayersCapacityList && clientPlayersCapacityList.length > 0) {
             console.warn("[Game.js DEBUG ME] Index out of bounds for fallback or lists empty. Idx:", clientCurrentPlayerIndex, "ActiveP:", JSON.stringify(clientActivePlayerColors), "PlayersL:", JSON.stringify(clientPlayersCapacityList));
           } else {
-            console.warn("[Game.js DEBUG ME] Critical lists for turn determination (activePlayerColors, players) are empty/invalid.");
+            console.warn("[Game.js DEBUG ME] Critical lists for turn determination are empty/invalid.");
           }
       }
+      // addMessage calls are fine here as addMessage is stable
       addMessage(`[DEBUG ME] MyColor: ${clientMyPlayerColor}`, 'debug');
       addMessage(`[DEBUG ME] Idx: ${clientCurrentPlayerIndex}`, 'debug');
       addMessage(`[DEBUG ME] ActiveP: ${JSON.stringify(clientActivePlayerColors)}`, 'debug');
       addMessage(`[DEBUG ME] Calc UI Turn: ${logCurrentPlayerColor}`, 'debug');
       addMessage(`[DEBUG ME] Calc UI isMyTurn: ${logIsMyTurn}`, 'debug');
     }
-  }, [gameState, myPlayerColor, addMessage]);
-  // =======================================================================
-  // END OF DEBUG LOGGING BLOCK
-  // =======================================================================
+  }, [gameState, myPlayerColor, addMessage]); // This specific useEffect is for debugging and uses gameState directly
 
   const handleRollDice = useCallback(() => {
-    if (socket.connected && propGameId && gameState && myPlayerColor) {
+    const currentGameState = gameStateRef.current;
+    const currentMyPlayerColor = myPlayerColorRef.current;
+    const currentRoundOverInfo = roundOverInfoRef.current;
+    const currentOverallWinnerInfo = overallWinnerInfoRef.current;
+
+    if (socket.connected && propGameId && currentGameState && currentMyPlayerColor) {
         let actualCurrentPlayer;
-         if (gameState.activePlayerColors && gameState.activePlayerColors.length > 0 && gameState.current_player_index != null) {
-            actualCurrentPlayer = gameState.activePlayerColors[gameState.current_player_index % gameState.activePlayerColors.length];
+         if (currentGameState.activePlayerColors && currentGameState.activePlayerColors.length > 0 && currentGameState.current_player_index != null) {
+            actualCurrentPlayer = currentGameState.activePlayerColors[currentGameState.current_player_index % currentGameState.activePlayerColors.length];
         } else { addMessage("Cannot roll dice: Active player data unclear for roll check."); return; }
-        if (actualCurrentPlayer !== myPlayerColor) { addMessage("Cannot roll dice: Not your turn."); return; }
-        if (gameState.awaitingMove) { addMessage("You need to move a pawn first."); return; }
-        if (roundOverInfo || overallWinnerInfo) { addMessage("Cannot roll dice: Round or game is over."); return; }
+        if (actualCurrentPlayer !== currentMyPlayerColor) { addMessage("Cannot roll dice: Not your turn."); return; }
+        if (currentGameState.awaitingMove) { addMessage("You need to move a pawn first."); return; }
+        if (currentRoundOverInfo || currentOverallWinnerInfo) { addMessage("Cannot roll dice: Round or game is over."); return; }
         socket.emit('rollDice', { gameId: propGameId });
     } else { addMessage("Cannot roll dice: Not in a game, not connected, or player color missing."); }
-  }, [propGameId, gameState, myPlayerColor, addMessage, roundOverInfo, overallWinnerInfo]);
+  }, [propGameId, addMessage]); // Dependencies are stable props/refs or stable callbacks
 
   const handleMovePawn = useCallback((pawnId) => {
-    if (socket.connected && propGameId && gameState && myPlayerColor) {
+    const currentGameState = gameStateRef.current;
+    const currentMyPlayerColor = myPlayerColorRef.current;
+
+    if (socket.connected && propGameId && currentGameState && currentMyPlayerColor) {
         let actualCurrentPlayer;
-        if (gameState.activePlayerColors && gameState.activePlayerColors.length > 0 && gameState.current_player_index != null) {
-            actualCurrentPlayer = gameState.activePlayerColors[gameState.current_player_index % gameState.activePlayerColors.length];
+        if (currentGameState.activePlayerColors && currentGameState.activePlayerColors.length > 0 && currentGameState.current_player_index != null) {
+            actualCurrentPlayer = currentGameState.activePlayerColors[currentGameState.current_player_index % currentGameState.activePlayerColors.length];
         } else { addMessage("Cannot move pawn: Active player data unclear for move check."); return; }
-        if (actualCurrentPlayer !== myPlayerColor) { addMessage("Cannot move pawn: Not your turn."); return; }
-        if (!gameState.awaitingMove) { addMessage("Not awaiting a move. Roll dice or wait for your turn if you get an extra roll."); return; }
-        if (gameState.dice_roll === null || gameState.dice_roll === 0) { addMessage("No dice roll to use for move. This shouldn't happen if awaitingMove is true."); return; }
+        if (actualCurrentPlayer !== currentMyPlayerColor) { addMessage("Cannot move pawn: Not your turn."); return; }
+        if (!currentGameState.awaitingMove) { addMessage("Not awaiting a move. Roll dice or wait for your turn if you get an extra roll."); return; }
+        if (currentGameState.dice_roll === null || currentGameState.dice_roll === 0) { addMessage("No dice roll to use for move. This shouldn't happen if awaitingMove is true."); return; }
         socket.emit('movePawn', { gameId: propGameId, pawnId });
     } else { addMessage("Cannot move pawn: Not in a game, not connected, or player color missing."); }
-  }, [propGameId, gameState, myPlayerColor, addMessage]);
+  }, [propGameId, addMessage]);
 
   const handleConfirmNextRound = useCallback(() => {
-      if (socket.connected && propGameId && roundOverInfo && roundOverInfo.roundWinnerColor === myPlayerColor) {
+    const currentRoundOverInfo = roundOverInfoRef.current;
+    const currentMyPlayerColor = myPlayerColorRef.current;
+      if (socket.connected && propGameId && currentRoundOverInfo && currentRoundOverInfo.roundWinnerColor === currentMyPlayerColor) {
           socket.emit('confirmNextRound', { gameId: propGameId });
       } else { addMessage("Cannot start next round or not your turn to confirm."); }
-  }, [propGameId, roundOverInfo, myPlayerColor, addMessage]);
+  }, [propGameId, addMessage]);
 
   const handleSendChatMessage = useCallback(() => {
       if (socket.connected && propGameId && chatInputValue.trim() !== '') {
@@ -131,36 +141,55 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
       } else { addMessage("Cannot send chat message: Not connected or not in a game."); }
   }, [propGameId, chatInputValue, addMessage, setChatInputValue]);
 
-  // Main useEffect for socket event listeners and game setup
+
+  // Main useEffect for socket event listeners
   useEffect(() => {
-    // setGameState(initialGameState); // Commented out to prevent gameState reset on initialGameState prop change
-    if (propGameId && (myPlayerColor || assignedPlayerColor) && !messages.some(msg => msg.content.startsWith(`Joined Game: ${propGameId}`))) {
-        const namePart = myPlayerName || `Player ${assignedPlayerColor || myPlayerColor}`;
-        addMessage(`Joined Game: ${propGameId}. You are ${namePart} (${assignedPlayerColor || myPlayerColor}).`);
+    console.log('[Game.js DEBUG] MAIN_EFFECT_RUN attempting. GameID Prop:', propGameId, 'Socket Connected:', socket.connected);
+    if (!propGameId) {
+      console.log('[Game.js DEBUG] MAIN_EFFECT_SKIPPED: propGameId is missing.');
+      return;
     }
+    if (!socket.connected) {
+      console.log('[Game.js DEBUG] MAIN_EFFECT_SKIPPED: socket is not connected.');
+      // Optionally, you might want to return here or set up a one-time listener for 'connect'
+      // to then run the main effect logic. For now, just logging and returning is fine for diagnostics.
+      return;
+    }
+    console.log('[Game.js DEBUG] MAIN_EFFECT_PROCEEDING with listener setup. GameID:', propGameId);
+    // The existing MAIN_EFFECT_RUN log is removed by this change as the new "attempting" and "proceeding" logs cover it.
+    // Unused local consts removed:
+    // const currentMyPlayerColor = myPlayerColorRef.current;
+    // const currentMyPlayerName = myPlayerNameRef.current;
+    // const currentAssignedPlayerColor = assignedPlayerColorRef.current; // from prop
+
+    // Initial join message - use refs for player name/color
+    // Check if messages already contains join message to prevent duplicates on potential re-runs (though deps are minimal now)
+    // This logic is tricky with setMessages, as messages itself is not a dependency.
+    // For simplicity, let's assume this useEffect runs once per gameId effectively.
+    // if (propGameId && currentMyPlayerColor && !messages.some(msg => msg.content.startsWith(`Joined Game: ${propGameId}`))) {
+    //     const namePart = currentMyPlayerName || `Player ${currentMyPlayerColor}`;
+    //     addMessage(`Joined Game: ${propGameId}. You are ${namePart} (${currentMyPlayerColor}).`);
+    // }
+    // The above message might be better handled outside this specific useEffect or passed differently.
+    // For now, let's focus on event handlers.
 
     const handleConnect = () => addMessage('Reconnected to server. Socket ID: ' + socket.id);
     const handleDisconnect = (reason) => addMessage('Disconnected from server: ' + reason);
 
-    const handleGameStateUpdate = (data) => { // data is the wrapper { gameState: ... }
+    const handleGameStateUpdate = (data) => {
       console.log("[Game.js] handleGameStateUpdate - Received raw data:", JSON.stringify(data));
-    
       if (data && data.gameState && typeof data.gameState === 'object' && data.gameState.status) {
         const unwrappedGameState = data.gameState;
         console.log("[Game.js] handleGameStateUpdate - Setting unwrapped state:", JSON.stringify(unwrappedGameState));
-        setGameState(unwrappedGameState);
-    
-        // All subsequent logic in this function for clientMovablePawnIds MUST use unwrappedGameState
+        setGameState(unwrappedGameState); // This will trigger re-render and update gameStateRef via its own useEffect
+
+        // Logic for clientMovablePawnIds, using unwrappedGameState and refs for other state
+        const playerColorForPawnCheck = myPlayerColorRef.current; // Use ref
         let currentTurnPlayerColorForMovablePawns;
-        // Check if myPlayerColor is defined, it's from useState(assignedPlayerColor)
-        // and assignedPlayerColor is a prop.
-        const playerColorForPawnCheck = myPlayerColor || assignedPlayerColor;
-    
-    
+
         if (unwrappedGameState.activePlayerColors && unwrappedGameState.activePlayerColors.length > 0 && typeof unwrappedGameState.current_player_index === 'number') {
           currentTurnPlayerColorForMovablePawns = unwrappedGameState.activePlayerColors[unwrappedGameState.current_player_index % unwrappedGameState.activePlayerColors.length];
         } else if (unwrappedGameState.players && unwrappedGameState.players.length > 0 && typeof unwrappedGameState.current_player_index === 'number' && unwrappedGameState.current_player_index < unwrappedGameState.players.length) {
-          // This console.warn was in the original code, keeping it for now.
           console.warn("[Game.js handleGameStateUpdate] Using fallback for currentTurnPlayerColorForMovablePawns.");
           currentTurnPlayerColorForMovablePawns = unwrappedGameState.players[unwrappedGameState.current_player_index];
         }
@@ -168,55 +197,49 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
         if (playerColorForPawnCheck && currentTurnPlayerColorForMovablePawns === playerColorForPawnCheck && unwrappedGameState.awaitingMove) {
           const currentDice = unwrappedGameState.dice_roll;
           if (currentDice && unwrappedGameState.pawns && unwrappedGameState.pawns[playerColorForPawnCheck]) {
-              const myPawnsData = unwrappedGameState.pawns[playerColorForPawnCheck]; // Renamed to avoid conflict
+              const myPawnsData = unwrappedGameState.pawns[playerColorForPawnCheck];
               const calculatedMovableIds = [];
               const playerBoardData = unwrappedGameState.board && unwrappedGameState.board.players && unwrappedGameState.board.players[playerColorForPawnCheck];
               const allHome = playerBoardData?.home_area_count === 4;
-    
               if (!(allHome && currentDice !== 6)) {
-                  myPawnsData.forEach(pawn => { // Use myPawnsData
-                      if (pawn.state === 'home' && currentDice === 6) {
-                          calculatedMovableIds.push(pawn.id);
-                      } else if (pawn.state === 'active' || pawn.state === 'homestretch') {
-                          calculatedMovableIds.push(pawn.id);
-                      }
+                  myPawnsData.forEach(pawn => {
+                      if (pawn.state === 'home' && currentDice === 6) calculatedMovableIds.push(pawn.id);
+                      else if (pawn.state === 'active' || pawn.state === 'homestretch') calculatedMovableIds.push(pawn.id);
                   });
               }
               setClientMovablePawnIds(calculatedMovableIds);
-          } else {
-               setClientMovablePawnIds([]);
-          }
-        } else {
-          setClientMovablePawnIds([]);
-        }
-        // End of clientMovablePawnIds logic
-    
+          } else { setClientMovablePawnIds([]); }
+        } else { setClientMovablePawnIds([]); }
       } else {
-        console.error("[Game.js] handleGameStateUpdate: Received data in unexpected structure from 'gameStateUpdate' event or missing essential properties like .status. Data:", JSON.stringify(data));
-        // Avoid calling setGameState if the structure is wrong to prevent further errors.
+        console.error("[Game.js] handleGameStateUpdate: Received data in unexpected structure. Data:", JSON.stringify(data));
       }
     };
 
     const handleDiceRolled = (data) => {
-      let playerName = (gameState && gameState.playerNames && gameState.playerNames[data.playerColor]) || data.playerColor;
+      const currentGameState = gameStateRef.current; // Use ref
+      const playerColorForMessage = myPlayerColorRef.current; // Use ref for self-check
+
+      let playerName = (currentGameState && currentGameState.playerNames && currentGameState.playerNames[data.playerColor]) || data.playerColor;
       let message = `${playerName} rolled a ${data.diceValue}. Sixes streak: ${data.consecutiveSixes}.`;
       if (data.mustRollAgain) message += " Must roll again.";
       if (data.awaitingMove) message += " Awaiting move.";
       addMessage(message);
-      if(data.singleMovePawnId !== undefined && data.playerColor === myPlayerColor && data.awaitingMove) {
+      if(data.singleMovePawnId !== undefined && data.playerColor === playerColorForMessage && data.awaitingMove) {
           addMessage(`Server suggests pawn ID: ${data.singleMovePawnId} is the only move.`);
       }
     };
 
     const handlePawnMoved = (data) => {
-      let playerName = (gameState && gameState.playerNames && gameState.playerNames[data.playerColor]) || data.playerColor;
+      const currentGameState = gameStateRef.current; // Use ref
+      let playerName = (currentGameState && currentGameState.playerNames && currentGameState.playerNames[data.playerColor]) || data.playerColor;
       let autoMoveText = data.autoMoved ? " (auto-moved by server)" : "";
       addMessage(`${playerName} moved pawn ${data.pawnId}. New Pos: ${data.newPos}, New State: ${data.newState}${autoMoveText}.`);
     };
 
     const handleTurnChanged = (data) => {
+      const currentGameState = gameStateRef.current; // Use ref
       let newCurrentPlayerColorFromEvent = data.currentPlayer;
-      let playerName = (gameState && gameState.playerNames && gameState.playerNames[newCurrentPlayerColorFromEvent]) || newCurrentPlayerColorFromEvent;
+      let playerName = (currentGameState && currentGameState.playerNames && currentGameState.playerNames[newCurrentPlayerColorFromEvent]) || newCurrentPlayerColorFromEvent;
       addMessage(`Turn changed. Current player: ${playerName}.`);
       setClientMovablePawnIds([]);
     };
@@ -224,26 +247,73 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
     const handleActionError = (data) => addMessage(`Error: ${data.message}`);
     const handlePlayerJoined = (data) => addMessage(`${data.playerName || data.playerColor} (${data.socketId ? data.socketId.substring(0,5) : 'N/A'}) has joined the game!`);
     const handlePlayerDisconnected = (data) => addMessage(`${data.playerName || data.playerColor} has disconnected.`);
+
     const handleRolledThreeSixes = (data) => {
-        let playerName = (gameState && gameState.playerNames && gameState.playerNames[data.playerColor]) || data.playerColor;
+        const currentGameState = gameStateRef.current; // Use ref
+        let playerName = (currentGameState && currentGameState.playerNames && currentGameState.playerNames[data.playerColor]) || data.playerColor;
         addMessage(`${playerName} rolled three consecutive sixes! Dice was ${data.diceResult}. Turn forfeited.`);
     };
+
     const handleRoundOver = (data) => {
-        setRoundOverInfo(data);
-        const winnerName = data.roundWinnerName || (gameState && gameState.playerNames && gameState.playerNames[data.roundWinnerColor]) || data.roundWinnerColor;
+        setRoundOverInfo(data); // This will update roundOverInfoRef via its useEffect
+        const currentGameState = gameStateRef.current; // Use ref
+        const winnerName = data.roundWinnerName || (currentGameState && currentGameState.playerNames && currentGameState.playerNames[data.roundWinnerColor]) || data.roundWinnerColor;
         addMessage(`Runda skończona! Wygrywem zostaje: ${winnerName}. Wyniki: ${JSON.stringify(data.playerScores)}`);
     };
 
     const handleOverallGameOver = (data) => {
-        setOverallWinnerInfo(data);
-        setRoundOverInfo(null);
-        const winnerName = data.winnerName || (gameState && gameState.playerNames && gameState.playerNames[data.winnerColor]) || data.winnerColor;
+        setOverallWinnerInfo(data); // This will update overallWinnerInfoRef
+        setRoundOverInfo(null); // This will update roundOverInfoRef
+        const currentGameState = gameStateRef.current; // Use ref
+        const winnerName = data.winnerName || (currentGameState && currentGameState.playerNames && currentGameState.playerNames[data.winnerColor]) || data.winnerColor;
         addMessage(`Koniec Gry! Wygrywem zostaje: ${winnerName}. Wynik:  ${JSON.stringify(data.finalScores)}`);
     };
 
     const handleNextRoundStarted = (data) => {
-        setRoundOverInfo(null);
+        setRoundOverInfo(null); // This will update roundOverInfoRef
         addMessage(data.message || "Next round has started!");
+    };
+
+    const handleNewChatMessage = (chatData) => {
+        const currentGameState = gameStateRef.current; // Use ref
+        const senderDisplayName = (currentGameState && currentGameState.playerNames && currentGameState.playerNames[chatData.senderColor]) || chatData.senderColor;
+        const messageContent = `${senderDisplayName}: ${chatData.message}`;
+        addMessage(messageContent, 'chat', chatData.senderColor, senderDisplayName);
+    };
+
+    // Readiness Check Listeners - use refs as needed
+    const handleInitiateReadinessCheck = (data) => {
+      console.log('[Game.js DEBUG] HIRC_EVENT_RECEIVED. Data:', data);
+      addMessage(`Serwer zainicjował sprawdzanie gotowości. Czas na potwierdzenie: ${data.timeout || 10}s.`, 'system');
+      setAwaitingReadinessConfirm(true);
+      setReadinessTimer(data.timeout || 10);
+      setReadyPlayersStatus(data.initialReadyStatus || {});
+      const myPlayerActualId = socket.id;
+      if (data.initialReadyStatus && data.initialReadyStatus[myPlayerActualId]) {
+        setReadinessConfirmedBySelf(true);
+      } else {
+        setReadinessConfirmedBySelf(false);
+      }
+    };
+
+    const handlePlayerReadinessUpdate = (data) => {
+      setReadyPlayersStatus(data.newReadyStatus); // readyPlayersStatus state not directly used by other handlers here
+      const myPlayerActualId = socket.id;
+      if (data.newReadyStatus[myPlayerActualId]) {
+        setReadinessConfirmedBySelf(true);
+        addMessage('Twoja gotowość została potwierdzona.', 'event');
+      }
+    };
+
+    const handleReadinessCheckOutcome = (data) => {
+      setAwaitingReadinessConfirm(false);
+      setReadinessTimer(0);
+      if (data.success) {
+        addMessage("Wszyscy gracze gotowi! Gra zaraz się rozpocznie...", 'system');
+      } else {
+        addMessage(`Sprawdzanie gotowości nie powiodło się: ${data.message}. Kreator może spróbować ponownie.`, 'error');
+      }
+      setReadinessConfirmedBySelf(false); 
     };
 
     socket.on('connect', handleConnect);
@@ -259,99 +329,48 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
     socket.on('roundOver', handleRoundOver);
     socket.on('overallGameOver', handleOverallGameOver);
     socket.on('nextRoundStarted', handleNextRoundStarted);
-
-    // Readiness Check Listeners
-    const handleInitiateReadinessCheck = (data) => {
-      addMessage(`Serwer zainicjował sprawdzanie gotowości. Czas na potwierdzenie: ${data.timeout || 10}s.`, 'system');
-      setAwaitingReadinessConfirm(true);
-      setReadinessTimer(data.timeout || 10);
-      setReadyPlayersStatus(data.initialReadyStatus || {});
-      // Check if this player is already marked as ready by the server (e.g. creator)
-      const myPlayerActualId = socket.id; // Use current socket.id
-      if (data.initialReadyStatus && data.initialReadyStatus[myPlayerActualId]) {
-        setReadinessConfirmedBySelf(true);
-      } else {
-        setReadinessConfirmedBySelf(false);
-      }
-    };
-
-    const handlePlayerReadinessUpdate = (data) => {
-      setReadyPlayersStatus(data.newReadyStatus);
-      const myPlayerActualId = socket.id; // Use current socket.id
-      if (data.newReadyStatus[myPlayerActualId]) {
-        setReadinessConfirmedBySelf(true);
-        addMessage('Twoja gotowość została potwierdzona.', 'event');
-      }
-      // Optional: Log who became ready
-      // const justReadyPlayer = Object.keys(data.newReadyStatus).find(id => data.newReadyStatus[id] && !readyPlayersStatus[id]);
-      // if (justReadyPlayer) {
-      //   const playerName = gameState?.playerNames?.[justReadyPlayer] || gameState?.playersSetup?.find(p=>p.playerId === justReadyPlayer)?.playerName || justReadyPlayer;
-      //   addMessage(`${playerName} jest gotowy!`);
-      // }
-    };
-
-    const handleReadinessCheckOutcome = (data) => {
-      setAwaitingReadinessConfirm(false);
-      setReadinessTimer(0);
-      if (data.success) {
-        addMessage("Wszyscy gracze gotowi! Gra zaraz się rozpocznie...", 'system');
-        // Game start is usually triggered by a gameStateUpdate that changes game.status
-      } else {
-        addMessage(`Sprawdzanie gotowości nie powiodło się: ${data.message}. Kreator może spróbować ponownie.`, 'error');
-      }
-      // Reset self confirmation for next potential check
-      setReadinessConfirmedBySelf(false); 
-    };
-
+    socket.on('newChatMessage', handleNewChatMessage);
     socket.on('initiateReadinessCheck', handleInitiateReadinessCheck);
+    console.log('[Game.js DEBUG] HIRC_LISTENER_ATTACHED for game:', propGameId);
     socket.on('playerReadinessUpdate', handlePlayerReadinessUpdate);
     socket.on('readinessCheckOutcome', handleReadinessCheckOutcome);
 
-    const handleNewChatMessage = (chatData) => {
-        const senderDisplayName = (gameState && gameState.playerNames && gameState.playerNames[chatData.senderColor]) || chatData.senderColor;
-        const messageContent = `${senderDisplayName}: ${chatData.message}`;
-        addMessage(messageContent, 'chat', chatData.senderColor, senderDisplayName);
-    };
-    socket.on('newChatMessage', handleNewChatMessage);
-
+    // Keydown listener for spacebar to roll dice
+    // This handler uses setGameState with a callback, which is fine.
+    // It also accesses myPlayerColorRef, roundOverInfoRef, overallWinnerInfoRef.
     const handleKeyDown = (event) => {
-        if (event.target.tagName === 'INPUT') {
-            return;
-        }
+        if (event.target.tagName === 'INPUT') return;
         if (event.code !== 'Space' && event.key !== ' ') return;
-        setGameState(currentGameState => {
-            if (!currentGameState || !myPlayerColor) return currentGameState;
+
+        // Access refs inside this handler
+        const currentMyPlayerColor = myPlayerColorRef.current;
+        const currentRoundOverInfo = roundOverInfoRef.current;
+        const currentOverallWinnerInfo = overallWinnerInfoRef.current;
+
+        // Use setGameState with a functional update to get the latest gameState
+        setGameState(currentGs => { // currentGs is the latest gameState
+            if (!currentGs || !currentMyPlayerColor) return currentGs;
             let actualCurrentPlayerForSpace;
-            if (currentGameState.activePlayerColors && currentGameState.activePlayerColors.length > 0 && currentGameState.current_player_index != null) {
-                actualCurrentPlayerForSpace = currentGameState.activePlayerColors[currentGameState.current_player_index % currentGameState.activePlayerColors.length];
-            } else {
-                // If activePlayerColors is not set, this might be too early or state is inconsistent
-                return currentGameState;
-            }
+            if (currentGs.activePlayerColors && currentGs.activePlayerColors.length > 0 && currentGs.current_player_index != null) {
+                actualCurrentPlayerForSpace = currentGs.activePlayerColors[currentGs.current_player_index % currentGs.activePlayerColors.length];
+            } else { return currentGs; }
 
-            const isMyTurnForSpace = myPlayerColor === actualCurrentPlayerForSpace;
-            const diceDisabledForSpace = !isMyTurnForSpace ||
-                                         currentGameState.awaitingMove ||
-                                         (currentGameState.dice_roll !== null && !currentGameState.mustRollAgain);
+            const isMyTurnForSpace = currentMyPlayerColor === actualCurrentPlayerForSpace;
+            const diceDisabledForSpace = !isMyTurnForSpace || currentGs.awaitingMove || (currentGs.dice_roll !== null && !currentGs.mustRollAgain);
+            const canRollForSpace = isMyTurnForSpace && !currentGs.awaitingMove && !diceDisabledForSpace && !currentRoundOverInfo && !currentOverallWinnerInfo;
 
-            const currentRoundOverInfo = roundOverInfo;
-            const currentOverallWinnerInfo = overallWinnerInfo;
-
-            const canRollForSpace = isMyTurnForSpace &&
-                                    !currentGameState.awaitingMove &&
-                                    !diceDisabledForSpace &&
-                                    !currentRoundOverInfo &&
-                                    !currentOverallWinnerInfo;
             if (canRollForSpace) {
                 event.preventDefault();
+                // handleRollDice is stable and uses refs itself
                 handleRollDice();
             }
-            return currentGameState;
+            return currentGs; // Return unchanged state if no roll
         });
     };
     window.addEventListener('keydown', handleKeyDown);
 
     return () => {
+      console.log('[Game.js DEBUG] MAIN_EFFECT_CLEANUP. GameID:', propGameId);
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
       socket.off('gameStateUpdate', handleGameStateUpdate);
@@ -366,17 +385,25 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
       socket.off('roundOver', handleRoundOver);
       socket.off('overallGameOver', handleOverallGameOver);
       socket.off('nextRoundStarted', handleNextRoundStarted);
-      
       socket.off('initiateReadinessCheck', handleInitiateReadinessCheck);
       socket.off('playerReadinessUpdate', handlePlayerReadinessUpdate);
       socket.off('readinessCheckOutcome', handleReadinessCheckOutcome);
-
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [propGameId, myPlayerColor, assignedPlayerColor, myPlayerName, initialGameState, gameState, messages, roundOverInfo, overallWinnerInfo, addMessage, handleRollDice]); // Added assignedPlayerColor dependency
+  // Minimal dependencies: only things that, if they change, *must* cause listeners to re-register.
+  // propGameId is a key identifier.
+  // socket.connected is added to re-run the effect when the socket connection status changes.
+  // initialGameState is used for some setup conditions (like isCreator) that are fixed once component mounts.
+  // myPlayerName, assignedPlayerColor are props, their refs are updated.
+  // addMessage is stable and used by handlers.
+  }, [propGameId, socket.connected, handleRollDice]);
+  // Note: addMessage could be added back if handlers defined outside this effect need it as a prop,
+  // but since handlers are inside and addMessage is stable via useCallback, it's accessible.
 
-  // useEffect for readiness timer
+  // useEffect for readiness timer (this is fine as is, depends on specific state)
   useEffect(() => {
+    // The RENDER START log was moved from here. This comment can be cleaned up if desired, but is harmless.
+    // The RENDER START log is now placed before PRE-LOAD-CHECK.
     if (awaitingReadinessConfirm && readinessTimer > 0) {
       const interval = setInterval(() => {
         setReadinessTimer(prevTimer => prevTimer - 1);
@@ -388,6 +415,9 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
       // addMessage("Czas na potwierdzenie gotowości minął.", "system");
     }
   }, [awaitingReadinessConfirm, readinessTimer, addMessage]);
+
+  // This is the correct single location for RENDER START log, after all hooks.
+  console.log('[Game.js RENDER START] GameID Prop:', propGameId, 'Socket ID:', socket.id, 'Socket Connected:', socket.connected, 'AwaitingConfirm:', awaitingReadinessConfirm);
 
   // Add this logging before the loading condition:
   console.log("[Game.js PRE-LOAD-CHECK] current gameState:", JSON.stringify(gameState, null, 2));
@@ -410,7 +440,8 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
 
   // If game is in setup, we don't need board/pawns/active players list yet.
   // We primarily need playersSetup for the setup UI.
-  if (gameState.status !== 'setup' && (!gameState.players || !gameState.board || !gameState.pawns)) {
+  const activeGamePhases = ['active', 'roundOver', 'gameOver'];
+  if (activeGamePhases.includes(gameState.status) && (!gameState.players || !gameState.board || !gameState.pawns)) {
     // For non-setup phases, these are critical, so show loading if they're missing.
     return <div>Loading game state for active game... If this persists, try returning to lobby.</div>;
   }
@@ -632,7 +663,7 @@ const Game = ({ gameId: propGameId, assignedPlayerColor, myPlayerName, initialGa
         )}
 
         {/* Readiness Confirmation UI */}
-        {awaitingReadinessConfirm && currentIsSetupPhase && (
+        {awaitingReadinessConfirm && (
           <div className="readiness-check-container" style={{padding: '10px', border: '1px solid #ffc107', borderRadius: '4px', backgroundColor: '#fff3e0', marginBlock: '15px'}}>
             <h4 style={{marginTop: 0, color: '#e65100'}}>Potwierdzenie Gotowości</h4>
             <p>Pozostały czas: <span style={{fontWeight: 'bold'}}>{readinessTimer}s</span></p>
