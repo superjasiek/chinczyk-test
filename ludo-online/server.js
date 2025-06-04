@@ -285,6 +285,8 @@ io.on('connection', (socket) => {
             });
 
             if (victoryCheck.overallWinnerFound) {
+                // The game.status is already set to 'gameOver' by checkForGameVictory.
+                // We ensure the event is emitted. The gameStateUpdate at the end of the handler will reflect this.
                 io.to(gameId).emit('overallGameOver', { 
                     winnerColor: game.overall_game_winner,
                     winnerName: game.playerNames[game.overall_game_winner],
@@ -294,8 +296,8 @@ io.on('connection', (socket) => {
                 if (winnerName) {
                     globalPlayerScores[winnerName] = (globalPlayerScores[winnerName] || 0) + 2; // Simplified scoring
                 }
-                delete activeGames[gameId]; 
-                return; 
+                // Do NOT delete activeGames[gameId] here.
+                // Do NOT return here; allow the final gameStateUpdate to be sent.
             } else {
                 game.awaitingNextRoundConfirmationFrom = game.round_winner;
             }

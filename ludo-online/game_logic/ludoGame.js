@@ -282,7 +282,8 @@ function movePawn(game, pawnOwnerColor, pawnId, diceValue) {
                     game.board.players[pawnOwnerColor].finished_count++;
                     if (game.board.players[pawnOwnerColor].finished_count === NUM_PAWNS_PER_PLAYER) {
                         game.round_over = true; 
-                        game.round_winner = pawnOwnerColor; 
+                        game.round_winner = pawnOwnerColor;
+                        game.status = 'roundOver'; // Added this line
                     }
                     return true;
                 } else { 
@@ -329,7 +330,8 @@ function movePawn(game, pawnOwnerColor, pawnId, diceValue) {
             game.board.players[pawnOwnerColor].finished_count++;
             if (game.board.players[pawnOwnerColor].finished_count === NUM_PAWNS_PER_PLAYER) {
                 game.round_over = true; 
-                game.round_winner = pawnOwnerColor; 
+                game.round_winner = pawnOwnerColor;
+                game.status = 'roundOver'; // Added this line
             }
             return true;
         } else { 
