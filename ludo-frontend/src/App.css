@@ -55,47 +55,18 @@ body {
 }
 
 /* Game.js Specific Styles */
-.game-active-container {
+.game-page-wrapper { /* Renamed from .game-active-container */
   max-width: 1100px; /* Adjust as needed */
   margin: 0 auto;   /* Centers the container itself */
   padding: 15px;
   background-color: #fff;
   border-radius: 8px;
   box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-
-  /* Added properties for centering children */
-  display: flex;
-  flex-direction: row; /* Changed to row for two-column layout */
-  flex-wrap: wrap; /* Allow columns to wrap on smaller screens */
-  align-items: flex-start; /* Align items to the start of the flex container */
-}
-
-.game-left-column {
-  width: 60%;
-  padding-right: 10px;
-  box-sizing: border-box; /* Include padding and border in the element's total width and height */
-}
-
-.game-right-column {
-  width: 40%;
-  padding-left: 10px;
-  box-sizing: border-box; /* Include padding and border in the element's total width and height */
-  overflow: hidden; /* Prevent content from spilling out of the right column */
+  /* display: flex properties removed */
 }
 
 /* Responsive adjustments for smaller screens */
-@media (max-width: 768px) {
-  .game-active-container {
-    flex-direction: column; /* Stack columns vertically */
-    align-items: center; /* Center items when stacked */
-  }
-  .game-left-column,
-  .game-right-column {
-    width: 100%;
-    padding-left: 0;
-    padding-right: 0;
-  }
-}
+/* Associated @media query for .game-active-container, .game-left-column, .game-right-column removed */
 
 .game-title {
   color: #333;
@@ -129,10 +100,10 @@ body {
 
 
 .turn-indicator {
-  padding: 10px;
-  margin: 10px 0;
+  padding: 6px;
+  margin: 8px 0;
   border-radius: 5px;
-  font-size: 1.2em;
+  font-size: 1.0em; /* Reduced font size */
   font-weight: bold;
   background-color: #e9ecef;
   border: 1px solid #ced4da;
@@ -173,14 +144,7 @@ body {
   margin-top: 0;
 }
 
-
-.player-areas-container {
-  display: flex;
-  justify-content: space-around;
-  align-items: flex-start; /* Align items to the top */
-  flex-wrap: wrap; /* Allow wrapping for smaller screens */
-  margin: 20px 0;
-}
+/* .player-areas-container rule removed */
 
 /* Message Log in Game.js */
 .game-log-container {
@@ -342,10 +306,7 @@ code {
   margin-right: 4px; /* Space after the sender's name/color */
 }
 
-.game-right-column .log-message .message-content {
-  overflow-wrap: break-word; /* Wrap long words/strings */
-  word-break: break-word; /* Fallback for older browsers / more aggressive breaking */
-}
+/* .game-right-column .log-message .message-content rule removed as .game-right-column is removed */
 
 /* Optional: Alternate background for messages for readability */
 /*

@@ -3,6 +3,7 @@ import { socket } from '../socket';
 import Board from './Board';
 import Dice from './Dice';
 import PlayerArea from './PlayerArea';
+import './Game.css';
 
 const Game = ({ gameId: propGameId, myPlayerName, initialGameState, onReturnToLobby }) => { // assignedPlayerColor removed
   // Comment removed as the log will be placed correctly after state declarations.
@@ -121,42 +122,6 @@ useEffect(() => {
           ...prevMessages.slice(0, 49)
       ]);
   }, []); // setMessages is stable
-
-  // Debug logging block - uses gameState directly, so it will re-run when gameState changes. This is fine.
-  useEffect(() => {
-    const currentGameState = gameStateRef.current; // Use ref for consistency if preferred, though direct gameState is fine here
-    const currentMyPlayerColor = myPlayerColorRef.current;
-
-    if (currentGameState && currentGameState.current_player_index != null && currentGameState.activePlayerColors && currentGameState.players && currentMyPlayerColor) {
-      const clientMyPlayerColor = currentMyPlayerColor;
-      const clientCurrentPlayerIndex = currentGameState.current_player_index;
-      const clientActivePlayerColors = currentGameState.activePlayerColors;
-      const clientPlayersCapacityList = currentGameState.players;
-      let logCurrentPlayerColor = "N/A_Debug_Init";
-      let logIsMyTurn = false;
-      if (clientActivePlayerColors && clientActivePlayerColors.length > 0) {
-          const activePlayerIndex = clientCurrentPlayerIndex % clientActivePlayerColors.length;
-          logCurrentPlayerColor = clientActivePlayerColors[activePlayerIndex];
-          logIsMyTurn = clientMyPlayerColor === logCurrentPlayerColor;
-      } else if (clientPlayersCapacityList && clientPlayersCapacityList.length > 0 && clientCurrentPlayerIndex < clientPlayersCapacityList.length) {
-          console.warn("[Game.js DEBUG ME] Using fallback (gameState.players) for logCurrentPlayerColor determination.");
-          logCurrentPlayerColor = clientPlayersCapacityList[clientCurrentPlayerIndex];
-          logIsMyTurn = clientMyPlayerColor === logCurrentPlayerColor;
-      } else {
-          if (clientPlayersCapacityList && clientPlayersCapacityList.length > 0) {
-            console.warn("[Game.js DEBUG ME] Index out of bounds for fallback or lists empty. Idx:", clientCurrentPlayerIndex, "ActiveP:", JSON.stringify(clientActivePlayerColors), "PlayersL:", JSON.stringify(clientPlayersCapacityList));
-          } else {
-            console.warn("[Game.js DEBUG ME] Critical lists for turn determination are empty/invalid.");
-          }
-      }
-      // addMessage calls are fine here as addMessage is stable
-      addMessage(`[DEBUG ME] MyColor: ${clientMyPlayerColor}`, 'debug');
-      addMessage(`[DEBUG ME] Idx: ${clientCurrentPlayerIndex}`, 'debug');
-      addMessage(`[DEBUG ME] ActiveP: ${JSON.stringify(clientActivePlayerColors)}`, 'debug');
-      addMessage(`[DEBUG ME] Calc UI Turn: ${logCurrentPlayerColor}`, 'debug');
-      addMessage(`[DEBUG ME] Calc UI isMyTurn: ${logIsMyTurn}`, 'debug');
-    }
-  }, [gameState, myPlayerColor, addMessage]); // This specific useEffect is for debugging and uses gameState directly
 
   const handleRollDice = useCallback(() => {
     const currentGameState = gameStateRef.current;
@@ -613,9 +578,8 @@ useEffect(() => {
   }
 
   return (
-    <div className="game-active-container">
+    <div className="game-page-wrapper">
       <h2 className="game-title">Chińczyk: {propGameId}</h2>
-      <p className="player-info">Jesteś {myPlayerNameRef.current || 'Player'} (<span style={{color: myPlayerColor, fontWeight:'bold', border: myPlayerColor ? `2px solid ${myPlayerColor}` : 'none', padding: '2px 4px', borderRadius: '4px'}}>{myPlayerColor || 'Wybieram...'}</span>)</p>
       
       {isWaitingForPlayers && !currentIsSetupPhase && ( // Only show this if not in setup
         <p className="waiting-players-message">
@@ -629,215 +593,217 @@ useEffect(() => {
         </p>
       )}
 
-      <div className="game-left-column">
-        <Board gameState={gameState} myPlayerColor={myPlayerColor} movablePawnIds={clientMovablePawnIds}
-              onPawnClick={(pawnId) => {
-                if (currentIsSetupPhase) { addMessage("Gra się jeszcze nie zaczeła.", "error"); return; }
-                if (isMyTurn && gameState.awaitingMove && !roundOverInfo && !overallWinnerInfo) { handleMovePawn(pawnId); }
-                else if (isMyTurn && !gameState.awaitingMove && !roundOverInfo && !overallWinnerInfo) { addMessage("Roll the dice first, or if you rolled a 6 and can't move, roll again."); }
-                else if (!isMyTurn && !roundOverInfo && !overallWinnerInfo) { addMessage("Not your turn to move."); }
-                else if (roundOverInfo || overallWinnerInfo) { addMessage("The round/game is over."); }
-              }}
-        />
-        <div className="player-areas-container">
-              {currentIsSetupPhase ? (
-                (gameState.playersSetup || Array.from({ length: numPlayers }, (_, i) => ({ slotId: i, playerId: null, playerName: null, color: null }))).map((playerSlot, index) => {
-                  const isSelfInSlot = playerSlot.playerId === socket.id;
-                  const playerIsReady = awaitingReadinessConfirm && readyPlayersStatus[playerSlot.playerId] === true;
-                  return (
-                    <PlayerArea
-                      key={playerSlot.slotId || `slot-${index}`}
-                      playerColor={playerSlot.color}
-                      playerName={playerSlot.playerName || (playerSlot.playerId ? `Gracz ${index + 1}`: null)}
-                      isSetupPhase={true}
-                      isSelf={isSelfInSlot}
-                      availableColors={availableColors}
-                      takenColors={gameState.playersSetup?.map(p => p.color).filter(c => c !== null) || []}
-                      onSelectColor={handleColorSelection}
-                      isReady={playerIsReady} // Pass down the readiness status
-                      pawns={[]}
-                      homeCount={0}
-                      finishedCount={0}
-                      isCurrentPlayer={false}
-                    />
-                  );
-                })
-              ) : (
-                (gameState.players || []).map(color => {
-                    if ((gameState.pawns && gameState.pawns[color]) || (gameState.playerNames && gameState.playerNames[color])) {
-                        return (<PlayerArea 
-                                  key={color} 
-                                  playerColor={color} 
-                                  playerName={(gameState.playerNames && gameState.playerNames[color])} 
-                                  pawns={gameState.pawns[color] || []} 
-                                  homeCount={gameState.board && gameState.board.players && gameState.board.players[color]?.home_area_count != null ? gameState.board.players[color].home_area_count : 4} 
-                                  finishedCount={gameState.board && gameState.board.players && gameState.board.players[color]?.finished_count != null ? gameState.board.players[color].finished_count : 0} 
-                                  isCurrentPlayer={color === currentPlayerColor}
-                                  isSetupPhase={false}
-                                />
-                        );
-                    }
-                    return null;
-                })
-              )}
-        </div>
-      </div>
-
-      <div className="game-right-column">
-        {isCreator && currentIsSetupPhase && (
-          <div className="game-setup-controls">
-            <h4>Game Settings (Creator)</h4>
-            <div className="form-group">
-              <label htmlFor="numPlayersSetup">Number of Players:</label>
-              <select 
-                id="numPlayersSetup" 
-                value={numPlayers} 
-                onChange={(e) => setNumPlayers(parseInt(e.target.value, 10))}
-                disabled={!currentIsSetupPhase || awaitingReadinessConfirm || (gameState.playersSetup && gameState.playersSetup.filter(p=>p.playerId).length > 1 && isCreator && gameState.status === 'setup')} 
-              >
-                <option value="2">2</option>
-                <option value="3">3</option>
-                <option value="4">4</option>
-              </select>
-            </div>
-            <div className="form-group">
-              <label htmlFor="targetVictoriesSetup">Target Victories:</label>
-              <select 
-                id="targetVictoriesSetup" 
-                value={targetVictories} 
-                onChange={(e) => setTargetVictories(parseInt(e.target.value, 10))}
-                disabled={!currentIsSetupPhase || awaitingReadinessConfirm} 
-              >
-                <option value="1">1</option>
-                <option value="2">2</option>
-                <option value="3">3</option>
-              </select>
-            </div>
-            <button 
-              onClick={handleStartGame} 
-              disabled={
-                !currentIsSetupPhase || 
-                awaitingReadinessConfirm || // Disable if readiness check is in progress
-                !gameState.playersSetup || 
-                // Ensure playersSetup has successfully populated up to numPlayers
-                gameState.playersSetup.filter(p => p.playerId).length !== numPlayers || 
-                gameState.playersSetup.slice(0, numPlayers).some(p => !p.playerId || !p.color)
-              } 
-              className="lobby-button"
-            >
-              Start Game
-            </button>
-            {/* Feedback Messages */}
-            { currentIsSetupPhase && !awaitingReadinessConfirm && gameState.playersSetup && gameState.playersSetup.filter(p=>p.playerId).length < numPlayers && <p style={{fontSize: '0.8em', color: 'red'}}>Oczekiwanie na {numPlayers - gameState.playersSetup.filter(p=>p.playerId).length} graczy.</p> }
-            { currentIsSetupPhase && !awaitingReadinessConfirm && gameState.playersSetup && gameState.playersSetup.filter(p=>p.playerId).length === numPlayers && gameState.playersSetup.slice(0, numPlayers).some(p => p.playerId && !p.color) && <p style={{fontSize: '0.8em', color: 'red'}}>Wszyscy gracze muszą wybrać kolor.</p> }
-          </div>
-        )}
-
-        {/* Readiness Confirmation UI */}
-        {awaitingReadinessConfirm && (
-          <div className="readiness-check-container" style={{padding: '10px', border: '1px solid #ffc107', borderRadius: '4px', backgroundColor: '#fff3e0', marginBlock: '15px'}}>
-            <h4 style={{marginTop: 0, color: '#e65100'}}>Potwierdzenie Gotowości</h4>
-            <p>Pozostały czas: <span style={{fontWeight: 'bold'}}>{readinessTimer}s</span></p>
-            
-            {socket.id === initialGameState.gameCreatorId ? ( // Creator's View
-              <div>
-                <p>Oczekiwanie na potwierdzenie od graczy...</p>
-                <p>Gotowi: {Object.values(readyPlayersStatus).filter(status => status).length} / {(gameState.playersSetup || []).filter(p => p.playerId && p.playerId !== initialGameState.gameCreatorId).length}</p>
-                {/* Display ready status per player - TODO: Enhance PlayerArea for this */}
-              </div>
-            ) : ( // Non-Creator Player's View
-              <div>
-                <p>Gra zaraz się rozpocznie! Potwierdź swoją gotowość.</p>
-                <button 
-                  onClick={handleConfirmReadiness} 
-                  disabled={readinessConfirmedBySelf || (readyPlayersStatus && readyPlayersStatus[socket.id])}
-                  className="lobby-button"
-                  style={{backgroundColor: (readinessConfirmedBySelf || (readyPlayersStatus && readyPlayersStatus[socket.id])) ? '#a5d6a7' : '#4CAF50' }} // Greenish if confirmed
-                >
-                  {(readinessConfirmedBySelf || (readyPlayersStatus && readyPlayersStatus[socket.id])) ? 'Gotowość Potwierdzona' : 'Potwierdź Gotowość'}
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {!overallWinnerInfo && !roundOverInfo && !isWaitingForPlayers && !currentIsSetupPhase && ( 
-          <div className={`turn-indicator ${isMyTurn ? 'my-turn' : ''}`}>
-            <h3>{isMyTurn ? "Twoja kolej!" : `${currentPlayerDisplayName}'s kolej`} {threeTryInfo}</h3>
-          </div>
-        )}
-        {!overallWinnerInfo && !roundOverInfo && gameState && gameState.awaitingMove && isMyTurn && !currentIsSetupPhase &&
-          <p className="action-prompt await-move">Wyrzuciłeś {gameState.dice_roll}. Wybierz pionka.</p>}
-        {!overallWinnerInfo && !roundOverInfo && gameState.mustRollAgain && isMyTurn && !gameState.awaitingMove && !currentIsSetupPhase &&
-          <p className="action-prompt roll-again">Rzucaj ponownie!</p>}
-        
-        {overallWinnerInfo && (
-          <div className="game-over-message overall-game-over">
-              <h3>GAME OVER!</h3>
-              <p>Wygrywem jest: <span style={{color: overallWinnerInfo.winnerColor, fontWeight: 'bold'}}>{overallWinnerInfo.winnerName || overallWinnerInfo.winnerColor}</span>!</p>
-              <h4>Finalne wyniki:</h4>
-              <ul>{Object.entries(overallWinnerInfo.finalScores || {}).map(([color, score]) => (<li key={color} style={{color: color}}>{(gameState.playerNames && gameState.playerNames[color]) || color}: {score}</li>))}</ul>
-              <button onClick={onReturnToLobby} className="lobby-button">Return to Lobby</button>
-          </div>
-        )}
-        {!overallWinnerInfo && roundOverInfo && (
-          <div className="game-over-message round-over">
-              <h3>Koniec Rundy!</h3>
-              <p><span style={{color: roundOverInfo.roundWinnerColor, fontWeight: 'bold'}}>{roundOverInfo.roundWinnerName || (gameState.playerNames && gameState.playerNames[roundOverInfo.roundWinnerColor]) || roundOverInfo.roundWinnerColor}</span> won this round!</p>
-              <h4>Wyniki:</h4>
-              <ul>{Object.entries(roundOverInfo.playerScores || {}).map(([color, score]) => ( <li key={color} style={{color: color}}>{(gameState.playerNames && gameState.playerNames[color]) || color}: {score}</li>))}</ul>
-              {myPlayerColor === roundOverInfo.roundWinnerColor ? (<button onClick={handleConfirmNextRound} className="lobby-button">OK - Start Next Round</button>) : (<p>Waiting for {(gameState.playerNames && gameState.playerNames[roundOverInfo.roundWinnerColor]) || roundOverInfo.roundWinnerColor} to start the next round.</p>)}
-          </div>
-        )}
-        {!overallWinnerInfo && !roundOverInfo && gameState.awaitingNextRoundConfirmationFrom && myPlayerColor !== gameState.awaitingNextRoundConfirmationFrom && !currentIsSetupPhase && (
-           <p className="waiting-confirmation">Waiting for {(gameState.playerNames && gameState.playerNames[gameState.awaitingNextRoundConfirmationFrom]) || gameState.awaitingNextRoundConfirmationFrom} to start the next round.</p>
-        )}
-
-        {!overallWinnerInfo && !roundOverInfo && !currentIsSetupPhase && (
-          <Dice value={gameState.dice_roll} onRoll={handleRollDice} isMyTurn={isMyTurn} awaitingMove={gameState.awaitingMove} mustRollAgain={gameState.mustRollAgain} disabled={diceDisabled || currentIsSetupPhase } />
-        )}
-        
-        <div className="game-log-container">
-          <h3>Log Gry:</h3>
-          <ul className="game-log-list">{messages.map((msg, index) => (
-            <li
-                key={index}
-                className={`log-message ${msg.type === 'chat' ? 'chat-message' : 'event-message'}`}
-            >
-                <span className="timestamp">[{msg.displayTimestamp}]</span>
-                {msg.type === 'chat' ? (
-                    <span className="message-content">
-                        <span className="sender-name" style={{ color: msg.senderColor, fontWeight: 'bold' }}>
-                            {msg.senderName || msg.senderColor || 'Player'}
-                        </span>
-                        {/* Corrected substring logic for chat messages */}
-                        {`: ${msg.content.startsWith((msg.senderName || msg.senderColor || 'Player') + ': ') ? msg.content.substring((msg.senderName || msg.senderColor || 'Player').length + 2) : msg.content}`}
-                    </span>
-                ) : (
-                    <span className="message-content">{msg.content}</span>
-                )}
-            </li>
-          ))}
-        </ul>
-        <div className="chat-input-container">
-            <input
-                type="text"
-                value={chatInputValue}
-                onChange={(e) => setChatInputValue(e.target.value)}
-                onKeyPress={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        handleSendChatMessage();
-                    }
+      <div className="game-main-content">
+        <div className="game-board-area">
+          <Board gameState={gameState} myPlayerColor={myPlayerColor} movablePawnIds={clientMovablePawnIds}
+                onPawnClick={(pawnId) => {
+                  if (currentIsSetupPhase) { addMessage("Gra się jeszcze nie zaczeła.", "error"); return; }
+                  if (isMyTurn && gameState.awaitingMove && !roundOverInfo && !overallWinnerInfo) { handleMovePawn(pawnId); }
+                  else if (isMyTurn && !gameState.awaitingMove && !roundOverInfo && !overallWinnerInfo) { addMessage("Roll the dice first, or if you rolled a 6 and can't move, roll again."); }
+                  else if (!isMyTurn && !roundOverInfo && !overallWinnerInfo) { addMessage("Not your turn to move."); }
+                  else if (roundOverInfo || overallWinnerInfo) { addMessage("The round/game is over."); }
                 }}
-                placeholder="Type a message..."
-                className="chat-input"
-            />
-            <button onClick={handleSendChatMessage} className="chat-send-button">Wyślij</button>
+          />
         </div>
-      </div> {/* game-log-container */}
-    </div> {/* game-right-column */}
-  </div> /* game-active-container */
+        <div className="game-info-controls-area">
+          {isCreator && currentIsSetupPhase && (
+            <div className="game-setup-controls">
+              <h4>Game Ustawienia gry</h4>
+              <div className="form-group">
+                <label htmlFor="numPlayersSetup">Liczba graczy:</label>
+                <select
+                  id="numPlayersSetup"
+                  value={numPlayers}
+                  onChange={(e) => setNumPlayers(parseInt(e.target.value, 10))}
+                  disabled={!currentIsSetupPhase || awaitingReadinessConfirm || (gameState.playersSetup && gameState.playersSetup.filter(p=>p.playerId).length > 1 && isCreator && gameState.status === 'setup')}
+                >
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label htmlFor="targetVictoriesSetup">Liczba zwycięstw:</label>
+                <select
+                  id="targetVictoriesSetup"
+                  value={targetVictories}
+                  onChange={(e) => setTargetVictories(parseInt(e.target.value, 10))}
+                  disabled={!currentIsSetupPhase || awaitingReadinessConfirm}
+                >
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                </select>
+              </div>
+              <button
+                onClick={handleStartGame}
+                disabled={
+                  !currentIsSetupPhase ||
+                  awaitingReadinessConfirm || // Disable if readiness check is in progress
+                  !gameState.playersSetup ||
+                  // Ensure playersSetup has successfully populated up to numPlayers
+                  gameState.playersSetup.filter(p => p.playerId).length !== numPlayers ||
+                  gameState.playersSetup.slice(0, numPlayers).some(p => !p.playerId || !p.color)
+                }
+                className="lobby-button creator-start-game-button"
+              >
+                Start Game
+              </button>
+              {/* Feedback Messages */}
+              { currentIsSetupPhase && !awaitingReadinessConfirm && gameState.playersSetup && gameState.playersSetup.filter(p=>p.playerId).length < numPlayers && <p style={{fontSize: '0.8em', color: 'red'}}>Oczekiwanie na {numPlayers - gameState.playersSetup.filter(p=>p.playerId).length} graczy.</p> }
+              { currentIsSetupPhase && !awaitingReadinessConfirm && gameState.playersSetup && gameState.playersSetup.filter(p=>p.playerId).length === numPlayers && gameState.playersSetup.slice(0, numPlayers).some(p => p.playerId && !p.color) && <p style={{fontSize: '0.8em', color: 'red'}}>Wszyscy gracze muszą wybrać kolor.</p> }
+            </div>
+          )}
+
+          {/* Readiness Confirmation UI */}
+          {awaitingReadinessConfirm && (
+            <div className="readiness-check-container" style={{padding: '10px', border: '1px solid #ffc107', borderRadius: '4px', backgroundColor: '#fff3e0', marginBlock: '15px'}}>
+              <h4 style={{marginTop: 0, color: '#e65100'}}>Potwierdzenie Gotowości</h4>
+              <p>Pozostały czas: <span style={{fontWeight: 'bold'}}>{readinessTimer}s</span></p>
+
+              {socket.id === initialGameState.gameCreatorId ? ( // Creator's View
+                <div>
+                  <p>Oczekiwanie na potwierdzenie od graczy...</p>
+                  <p>Gotowi: {Object.values(readyPlayersStatus).filter(status => status).length} / {(gameState.playersSetup || []).filter(p => p.playerId && p.playerId !== initialGameState.gameCreatorId).length}</p>
+                  {/* Display ready status per player - TODO: Enhance PlayerArea for this */}
+                </div>
+              ) : ( // Non-Creator Player's View
+                <div>
+                  <p>Gra zaraz się rozpocznie! Potwierdź swoją gotowość.</p>
+                  <button
+                    onClick={handleConfirmReadiness}
+                    disabled={readinessConfirmedBySelf || (readyPlayersStatus && readyPlayersStatus[socket.id])}
+                    className="lobby-button"
+                    style={{backgroundColor: (readinessConfirmedBySelf || (readyPlayersStatus && readyPlayersStatus[socket.id])) ? '#a5d6a7' : '#4CAF50' }} // Greenish if confirmed
+                  >
+                    {(readinessConfirmedBySelf || (readyPlayersStatus && readyPlayersStatus[socket.id])) ? 'Gotowość Potwierdzona' : 'Potwierdź Gotowość'}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {!overallWinnerInfo && !roundOverInfo && !isWaitingForPlayers && !currentIsSetupPhase && (
+            <div className={`turn-indicator ${isMyTurn ? 'my-turn' : ''}`}>
+              <h3>{isMyTurn ? "Twoja kolej!" : `${currentPlayerDisplayName}'s kolej`} {threeTryInfo}</h3>
+            </div>
+          )}
+          {!overallWinnerInfo && !roundOverInfo && gameState && gameState.awaitingMove && isMyTurn && !currentIsSetupPhase &&
+            <p className="action-prompt await-move">Wyrzuciłeś {gameState.dice_roll}. Wybierz pionka.</p>}
+          {!overallWinnerInfo && !roundOverInfo && gameState.mustRollAgain && isMyTurn && !gameState.awaitingMove && !currentIsSetupPhase &&
+            <p className="action-prompt roll-again">Rzucaj ponownie!</p>}
+
+          {overallWinnerInfo && (
+            <div className="game-over-message overall-game-over">
+                <h3>GAME OVER!</h3>
+                <p>Wygrywem jest: <span style={{color: overallWinnerInfo.winnerColor, fontWeight: 'bold'}}>{overallWinnerInfo.winnerName || overallWinnerInfo.winnerColor}</span>!</p>
+                <h4>Finalne wyniki:</h4>
+                <ul>{Object.entries(overallWinnerInfo.finalScores || {}).map(([color, score]) => (<li key={color} style={{color: color}}>{(gameState.playerNames && gameState.playerNames[color]) || color}: {score}</li>))}</ul>
+                <button onClick={onReturnToLobby} className="lobby-button">Return to Lobby</button>
+            </div>
+          )}
+          {!overallWinnerInfo && roundOverInfo && (
+            <div className="game-over-message round-over">
+                <h3>Koniec Rundy!</h3>
+                <p><span style={{color: roundOverInfo.roundWinnerColor, fontWeight: 'bold'}}>{roundOverInfo.roundWinnerName || (gameState.playerNames && gameState.playerNames[roundOverInfo.roundWinnerColor]) || roundOverInfo.roundWinnerColor}</span> won this round!</p>
+                <h4>Wyniki:</h4>
+                <ul>{Object.entries(roundOverInfo.playerScores || {}).map(([color, score]) => ( <li key={color} style={{color: color}}>{(gameState.playerNames && gameState.playerNames[color]) || color}: {score}</li>))}</ul>
+                {myPlayerColor === roundOverInfo.roundWinnerColor ? (<button onClick={handleConfirmNextRound} className="lobby-button start-next-round-button">OK - Start Next Round</button>) : (<p>Waiting for {(gameState.playerNames && gameState.playerNames[roundOverInfo.roundWinnerColor]) || roundOverInfo.roundWinnerColor} to start the next round.</p>)}
+            </div>
+          )}
+          {!overallWinnerInfo && !roundOverInfo && gameState.awaitingNextRoundConfirmationFrom && myPlayerColor !== gameState.awaitingNextRoundConfirmationFrom && !currentIsSetupPhase && (
+             <p className="waiting-confirmation">Waiting for {(gameState.playerNames && gameState.playerNames[gameState.awaitingNextRoundConfirmationFrom]) || gameState.awaitingNextRoundConfirmationFrom} to start the next round.</p>
+          )}
+
+          {!overallWinnerInfo && !roundOverInfo && !currentIsSetupPhase && (
+            <Dice value={gameState.dice_roll} onRoll={handleRollDice} isMyTurn={isMyTurn} awaitingMove={gameState.awaitingMove} mustRollAgain={gameState.mustRollAgain} disabled={diceDisabled || currentIsSetupPhase } />
+          )}
+
+          <div className="game-log-container">
+            <h3>Log Gry:</h3>
+            <ul className="game-log-list">{messages.map((msg, index) => (
+              <li
+                  key={index}
+                  className={`log-message ${msg.type === 'chat' ? 'chat-message' : 'event-message'}`}
+              >
+                  <span className="timestamp">[{msg.displayTimestamp}]</span>
+                  {msg.type === 'chat' ? (
+                      <span className="message-content">
+                          <span className="sender-name" style={{ color: msg.senderColor, fontWeight: 'bold' }}>
+                              {msg.senderName || msg.senderColor || 'Player'}
+                          </span>
+                          {/* Corrected substring logic for chat messages */}
+                          {`: ${msg.content.startsWith((msg.senderName || msg.senderColor || 'Player') + ': ') ? msg.content.substring((msg.senderName || msg.senderColor || 'Player').length + 2) : msg.content}`}
+                      </span>
+                  ) : (
+                      <span className="message-content">{msg.content}</span>
+                  )}
+              </li>
+            ))}
+          </ul>
+          <div className="chat-input-container">
+              <input
+                  type="text"
+                  value={chatInputValue}
+                  onChange={(e) => setChatInputValue(e.target.value)}
+                  onKeyPress={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleSendChatMessage();
+                      }
+                  }}
+                  placeholder="Type a message..."
+                  className="chat-input"
+              />
+              <button onClick={handleSendChatMessage} className="chat-send-button">Wyślij</button>
+          </div>
+        </div> {/* game-log-container */}
+        </div> {/* game-info-controls-area */}
+      </div> {/* game-main-content */}
+
+      <div className="player-areas-grid-section">
+        {currentIsSetupPhase ? (
+          (gameState.playersSetup || Array.from({ length: numPlayers }, (_, i) => ({ slotId: i, playerId: null, playerName: null, color: null }))).map((playerSlot, index) => {
+            const isSelfInSlot = playerSlot.playerId === socket.id;
+            const playerIsReady = awaitingReadinessConfirm && readyPlayersStatus[playerSlot.playerId] === true;
+            return (
+              <PlayerArea
+                key={playerSlot.slotId || `slot-${index}`}
+                playerColor={playerSlot.color}
+                playerName={playerSlot.playerName || (playerSlot.playerId ? `Gracz ${index + 1}`: null)}
+                isSetupPhase={true}
+                isSelf={isSelfInSlot}
+                availableColors={availableColors}
+                takenColors={gameState.playersSetup?.map(p => p.color).filter(c => c !== null) || []}
+                onSelectColor={handleColorSelection}
+                isReady={playerIsReady} // Pass down the readiness status
+                pawns={[]}
+                homeCount={0}
+                finishedCount={0}
+                isCurrentPlayer={false}
+              />
+            );
+          })
+        ) : (
+          (gameState.players || []).map(color => {
+              if ((gameState.pawns && gameState.pawns[color]) || (gameState.playerNames && gameState.playerNames[color])) {
+                  return (<PlayerArea
+                            key={color}
+                            playerColor={color}
+                            playerName={(gameState.playerNames && gameState.playerNames[color])}
+                            pawns={gameState.pawns[color] || []}
+                            homeCount={gameState.board && gameState.board.players && gameState.board.players[color]?.home_area_count != null ? gameState.board.players[color].home_area_count : 4}
+                            finishedCount={gameState.board && gameState.board.players && gameState.board.players[color]?.finished_count != null ? gameState.board.players[color].finished_count : 0}
+                            isCurrentPlayer={color === currentPlayerColor}
+                            isSetupPhase={false}
+                          />
+                  );
+              }
+              return null;
+          })
+        )}
+      </div>
+    </div> /* game-page-wrapper */
   );
 };
 

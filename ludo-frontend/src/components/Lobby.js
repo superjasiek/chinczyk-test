@@ -139,9 +139,9 @@ const Lobby = ({ onCreateGame, onJoinGame, errorMsg, clearError }) => {
                   backgroundColor: selectedGameId === game.gameId ? '#e9f5ff' : 'transparent'
                 }}
               >
-                <p><strong>Game ID: {game.gameId}</strong></p>
-                <p>Players: {game.currentPlayersCount}/{game.maxPlayers}</p>
-                <p>In Game: {game.playerNamesInGame.join(', ') || 'Waiting for players...'}</p>
+                <p><strong>ID Gry: {game.gameId}</strong></p>
+                <p>Liczba Graczy: {game.currentPlayersCount}/{game.maxPlayers}</p>
+                <p>W Grze: {game.playerNamesInGame.join(', ') || 'Waiting for players...'}</p>
               </div>
             ))}
           </div>

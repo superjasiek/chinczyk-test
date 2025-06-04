@@ -1,25 +1,29 @@
 /* Game.css - Styles for Game Configuration Panel and elements */
 
-.game-active-container {
+/* Old .game-active-container, .game-left-column, .game-right-column, and associated @media query removed */
+
+.game-main-content {
   display: flex;
   flex-direction: row;
-  flex-wrap: wrap; /* Allow wrapping for smaller screens if needed */
-  gap: 20px; /* Space between left and right columns */
+  /* justify-content: space-between; /* Or as needed */
+  align-items: flex-start; /* Key for top alignment */
+  gap: 20px; /* Space between board and info areas */
+  margin-top: 15px; /* Space below game title/messages */
+  margin-bottom: 20px; /* Space before player areas grid */
 }
 
-.game-left-column {
-  flex-grow: 1;
-  /* min-width to prevent excessive squishing, adjust as needed */
-  min-width: 400px; 
+.game-board-area {
+  flex: 3; /* Example: Board takes more space */
+  /* min-width: 400px; /* Or appropriate min-width based on Board.js */
 }
 
-.game-right-column {
+.game-info-controls-area {
+  flex: 2; /* Example: Info/controls take less space */
   display: flex;
   flex-direction: column;
-  gap: 15px; /* Space between config panel and game log */
-  width: 300px; /* Fixed or max-width, adjust as needed */
-  padding: 10px;
-  border-left: 1px solid #eee; /* Visual separation */
+  gap: 15px; /* Space between items in this column */
+  /* border-left: 1px solid #eee; /* Optional: visual separation */
+  /* padding-left: 15px; /* Optional: padding if border is used */
 }
 
 .game-configuration-panel {
@@ -210,7 +214,7 @@
 
 /* Basic button styling (can be overridden by more specific button styles) */
 .lobby-button, /* Re-use lobby button style if desired or make new base */
-.game-button { 
+.game-button {
   padding: 8px 12px;
   border: 1px solid #ccc;
   border-radius: 4px;
@@ -223,9 +227,7 @@
 }
 
 /* Player area styling - if it needs adjustment due to new layout */
-.player-areas-container {
-  /* display: flex; ... ensure it fits */
-}
+/* .player-areas-container (commented out) rule removed */
 
 h4, h5, h6 { /* Basic styling for headings in config panel */
     color: #333;
@@ -234,15 +236,43 @@ h4 { font-size: 1.2em; margin-bottom: 15px; border-bottom: 1px solid #ddd; paddi
 h5 { font-size: 1.1em; margin-bottom: 10px; }
 h6 { font-size: 1em; margin-bottom: 8px; color: #555;}
 
-/* Responsive consideration: stack columns on smaller screens */
-@media (max-width: 768px) {
-  .game-active-container {
-    flex-direction: column;
-  }
-  .game-right-column {
-    width: 100%; /* Take full width */
-    border-left: none; /* Remove side border */
-    border-top: 1px solid #eee; /* Add top border for separation */
-    margin-top: 20px;
-  }
+/* Responsive consideration for new structure (if needed later) can be added here */
+
+/* Style for the "OK - Start Next Round" button */
+.start-next-round-button {
+  background-color: #4CAF50; /* Green */
+  color: white; /* Text color for better contrast */
+  /* Other styles like padding, border-radius are inherited from .lobby-button */
+}
+
+.start-next-round-button:hover {
+  background-color: #45a049; /* Darker green on hover */
+}
+
+/* Style for the creator's "Start Game" button */
+button.lobby-button.creator-start-game-button {
+  background-color: #4CAF50 !important; /* Green */
+  color: white !important; /* Text color for better contrast */
+  /* Other styles like padding, border-radius are inherited from .lobby-button */
+}
+
+button.lobby-button.creator-start-game-button:hover {
+  background-color: #45a049 !important; /* Darker green on hover */
+  color: white !important;
+}
+
+button.lobby-button.creator-start-game-button:disabled {
+  background-color: #d3d3d3 !important; /* Light gray */
+  color: #707070 !important; /* Darker gray text */
+  cursor: not-allowed;
+}
+
+.player-areas-grid-section {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, auto);
+  gap: 15px; /* Adjust gap as desired */
+  justify-items: center; /* Center PlayerArea components within their grid cell */
+  align-items: start;   /* Align PlayerArea components to the top of their grid cell */
+  /* margin-top: 20px; /* Optional: if more space is needed above this section */
 }

@@ -1,5 +1,4 @@
 import React from 'react';
-import Pawn from './Pawn'; // To display home pawns perhaps
 
 const PlayerArea = ({ 
   playerColor, 
@@ -16,36 +15,28 @@ const PlayerArea = ({
   onSelectColor,
   isReady // New prop for readiness status
 }) => {
+  let borderColor = playerColor || 'grey';
+  if (isSetupPhase && isReady) {
+    borderColor = 'lightgreen';
+  } else if (!isSetupPhase && isCurrentPlayer) {
+    borderColor = 'gold';
+  }
+
   const areaStyle = {
-    border: `3px solid ${isSetupPhase && isReady ? 'lightgreen' : (isCurrentPlayer && !isSetupPhase ? 'gold' : playerColor || 'grey')}`, 
-    // Styling priority: Ready in setup > Current player in game > Default color or grey
+    border: `3px solid ${borderColor}`,
     padding: '10px',
     margin: '10px',
     borderRadius: '5px',
-    backgroundColor: '#f9f9f9',
+    backgroundColor: '#f9f9f9', // Unified background
     minWidth: '150px',
+    minHeight: '110px', // Added minHeight
   };
 
   const titleStyle = {
-    color: playerColor || (isSetupPhase && !playerName ? 'grey' : 'black'), // Grey out title if slot is empty in setup
+    color: playerColor || (isSetupPhase && !playerName ? 'grey' : 'black'), // Unified title color logic
     fontWeight: 'bold',
     marginBottom: '5px',
   };
-
-  const homePawnsDisplay = [];
-  if (!isSetupPhase && pawns) { // Only show pawns if not in setup phase
-    const homePawnsObjects = pawns.filter(p => p.state === 'home');
-    for (let i = 0; i < homeCount; i++) {
-        const pawn = homePawnsObjects[i];
-        homePawnsDisplay.push(
-            <Pawn 
-                key={pawn ? `home-${playerColor}-${pawn.id}` : `home-placeholder-${playerColor}-${i}`}
-                color={playerColor} 
-                id={pawn ? pawn.id : 'H'} 
-            />
-        );
-    }
-  }
 
   return (
     <div style={areaStyle}>
@@ -68,9 +59,17 @@ const PlayerArea = ({
                 opacity: takenColors.includes(color) ? 0.6 : 1,
               }}
               onClick={() => onSelectColor(color)}
-              disabled={takenColors.includes(color)}
+              disabled={
+                // Color is taken by another player (color !== playerColor is true if playerColor is null, as in this block)
+                (takenColors.includes(color) && color !== playerColor) ||
+                // Or, if "I" (isSelf) have already chosen a color (playerColor !== null)
+                // AND this button is for a different color.
+                // (This part of the condition will be false in this specific rendering block because playerColor is null,
+                // but including it for logical completeness as per potential broader interpretation of requirements)
+                (isSelf && playerColor !== null && color !== playerColor)
+              }
             >
-              {color} {takenColors.includes(color) ? '(Zajęty)' : ''}
+              {color} {takenColors.includes(color) && color !== playerColor ? '(Zajęty)' : ''}
             </button>
           ))}
         </div>
@@ -87,9 +86,6 @@ const PlayerArea = ({
       {!isSetupPhase && (
         <>
           <p>Pionki w Bazie: {homeCount}</p>
-          <div style={{ display: 'flex', flexWrap: 'wrap', minHeight: '35px' }}>
-            {homePawnsDisplay}
-          </div>
           <p>Pionki na Mecie: {finishedCount}</p>
         </>
       )}
