@@ -1,4 +1,6 @@
 // ludoGame.js - Core Ludo Game Logic
+const fs = require('fs');
+const path = require('path');
 
 // --- Constants ---
 const PLAYER_COLORS = ["Red", "Green", "Yellow", "Blue"];
@@ -23,10 +25,26 @@ const PAWN_STATES = {
 // Note: initializeGameBoard and initializePawns remain as they are,
 // but will be called by startGameActual, not directly by createLudoGameInstance.
 
+let FUNNY_COMMENTS = {};
+try {
+    const commentsPath = path.join(__dirname, 'funny_comments.json');
+    const commentsData = fs.readFileSync(commentsPath, 'utf8');
+    FUNNY_COMMENTS = JSON.parse(commentsData);
+} catch (err) {
+    console.error("Error loading funny comments:", err);
+    // Fallback to empty comments if file not found or error in parsing
+    FUNNY_COMMENTS = {
+        "capture": [],
+        "threeFinished": [],
+        "rapidHits": []
+    };
+}
+
 function initializeGameBoard(activePlayerColors) {
     const board = {
         track: Array(TRACK_LENGTH).fill(null), // Array of nulls
-        players: {}
+        players: {},
+        blackHolePosition: null // Added for black hole mode
     };
     activePlayerColors.forEach(color => {
         board.players[color] = {
@@ -54,7 +72,7 @@ function initializePawns(activePlayerColors) {
 }
 
 // Creates a new game instance object
-function createLudoGameInstance(gameId, creatorPlayerName, creatorPlayerId) {
+function createLudoGameInstance(gameId, creatorPlayerName, creatorPlayerId, options = {}) {
     if (!gameId || !creatorPlayerName || !creatorPlayerId) {
         throw new Error("Game ID, creator name, and creator ID are required to create a game.");
     }
@@ -65,11 +83,30 @@ function createLudoGameInstance(gameId, creatorPlayerName, creatorPlayerId) {
         playerId: creatorPlayerId,
         playerName: creatorPlayerName,
         color: null, // Color selection happens via UI
-        isCreator: true
+        isCreator: true,
+        isAI: false
     });
+
     // Initialize remaining slots up to a default max (e.g. 4)
-    for (let i = 1; i < 4; i++) { // Assuming default max 4 slots initially shown
-        playersSetup.push({ slotId: i, playerId: null, playerName: null, color: null, isCreator: false });
+    // Slot 1 is potentially for AI
+    if (options.enableAI && PLAYER_COLORS.length > 1) { // Check if AI can be enabled
+        playersSetup.push({
+            slotId: 1,
+            playerId: 'AI_PLAYER_ID', // Special ID for AI
+            playerName: 'Computer',
+            color: null, // AI color will be assigned by assignColorToAI
+            isCreator: false,
+            isAI: true
+        });
+        // Initialize further slots, skipping slot 1 if taken by AI
+        for (let i = 2; i < 4; i++) {
+            playersSetup.push({ slotId: i, playerId: null, playerName: null, color: null, isCreator: false, isAI: false });
+        }
+    } else {
+        // No AI or not enough colors, initialize all other slots as normal
+        for (let i = 1; i < 4; i++) {
+            playersSetup.push({ slotId: i, playerId: null, playerName: null, color: null, isCreator: false, isAI: false });
+        }
     }
 
     // This is the game instance object
@@ -91,6 +128,7 @@ function createLudoGameInstance(gameId, creatorPlayerName, creatorPlayerId) {
         playerNames: {},      // Map color to name for active players
         playerScores: {},
         targetVictories: 1,   // Actual target victories for the started game
+        blackHoleModeEnabled: false, // Added for black hole mode
         
         current_player_index: 0,
         dice_roll: null,
@@ -106,6 +144,25 @@ function createLudoGameInstance(gameId, creatorPlayerName, creatorPlayerId) {
         // Readiness properties
         readyPlayers: new Set(), // Stores playerIds of those who confirmed readiness
         readinessTimerId: null, // To store setTimeout ID for readiness check
+
+        // New Black Hole properties
+        blackHoleActivationPawnCountTarget: null,
+        blackHoleHasAppearedThisRound: false,
+
+        // New Earthquake Mode properties
+        earthquakeModeEnabled: false,
+        earthquakeActivationTurnTargets: [null, null], // Updated
+        earthquakesOccurredThisRound: 0, // Updated
+        earthquakeTargetHitFlags: [false, false], // Added
+        currentRoundTurnCounter: 0,
+        roundStartTime: null,
+        firstEarthquakeTriggered: false,
+        secondEarthquakeTriggered: false,
+        lastLogMessage: null,
+        lastLogMessageColor: null,
+        playerHitTimestamps: {}, // Added this line
+        playerConsecutiveNonSixRolls: {},
+        lastActivityTime: Date.now(),
     };
 
     return gameInstance;
@@ -115,6 +172,9 @@ function createLudoGameInstance(gameId, creatorPlayerName, creatorPlayerId) {
 // --- Core Game Functions (adapted to take 'game' instance) ---
 
 function rollDice() { // This is a utility, doesn't need 'game'
+    // This function is a utility and does not modify game state directly.
+    // lastActivityTime will be updated in the functions that call this,
+    // like makeAIMove or processPlayerRoll.
     return Math.floor(Math.random() * 6) + 1;
 }
 
@@ -203,7 +263,14 @@ function getMovablePawns(game, playerColor, diceValue) {
 }
 
 function switchPlayer(game) {
+    game.lastActivityTime = Date.now();
+    game.lastLogMessage = null;
+    game.lastLogMessageColor = null;
     if (game.status !== 'active') return;
+
+    // Earthquake mode check (Removed old logic)
+    // New earthquake logic will be called elsewhere or handled differently
+
     game.consecutive_sixes_count = 0;
     if (game.activePlayerColors && game.activePlayerColors.length > 0) {
         game.current_player_index = (game.current_player_index + 1) % game.activePlayerColors.length;
@@ -217,6 +284,7 @@ function switchPlayer(game) {
 }
 
 function movePawn(game, pawnOwnerColor, pawnId, diceValue) {
+    game.lastActivityTime = Date.now();
     if (game.status !== 'active') return false;
     const playerPawns = game.pawns[pawnOwnerColor];
     let pawnToMove = null;
@@ -244,7 +312,21 @@ function movePawn(game, pawnOwnerColor, pawnId, diceValue) {
                     opponentPawnObject.state = PAWN_STATES.HOME;
                     opponentPawnObject.position = null;
                     game.board.players[occPlayerColor].home_area_count++;
+                    if (!game.playerHitTimestamps[pawnOwnerColor]) {
+                        game.playerHitTimestamps[pawnOwnerColor] = []; // Initialize if not present, as a safeguard
+                    }
+                    game.playerHitTimestamps[pawnOwnerColor].push(Date.now());
+                    checkAndTriggerRapidHitsComment(game, pawnOwnerColor);
                     game.board.track[startPos] = null; 
+                    const captureComments = FUNNY_COMMENTS.capture || [];
+                    if (captureComments.length > 0) {
+                        const randomComment = captureComments[Math.floor(Math.random() * captureComments.length)];
+                        const attackerName = game.playerNames[pawnOwnerColor];
+                        const victimName = game.playerNames[occPlayerColor];
+                        const formattedComment = randomComment.replace("{X}", attackerName).replace("{Y}", victimName);
+                        game.lastLogMessage = formattedComment;
+                        game.lastLogMessageColor = pawnOwnerColor;
+                    }
                 } else { 
                     return false;
                 }
@@ -280,11 +362,36 @@ function movePawn(game, pawnOwnerColor, pawnId, diceValue) {
                     pawnToMove.state = PAWN_STATES.FINISHED;
                     pawnToMove.position = null;
                     game.board.players[pawnOwnerColor].finished_count++;
+                    // Black Hole Activation Check (when a pawn finishes)
+                    if (game.blackHoleModeEnabled && !game.blackHoleHasAppearedThisRound) {
+                        // pawnOwnerColor is already defined in movePawn referring to the owner of the pawn that just moved.
+                        // game.board.players[pawnOwnerColor].finished_count has just been incremented.
+                        if (game.board.players[pawnOwnerColor].finished_count > 0 && // Ensure count is valid
+                            game.board.players[pawnOwnerColor].finished_count <= 3 && // Check if count is 1, 2, or 3
+                            game.board.players[pawnOwnerColor].finished_count === game.blackHoleActivationPawnCountTarget) {
+                            
+                            module.exports.activateBlackHole(game); // This function sets game.board.blackHolePosition
+                            game.blackHoleHasAppearedThisRound = true;
+                            console.log(`[movePawn] Black hole activated by ${pawnOwnerColor} finishing a pawn. Target: ${game.blackHoleActivationPawnCountTarget}, CurrentFinished: ${game.board.players[pawnOwnerColor].finished_count}. New Position: ${game.board.blackHolePosition}`);
+                        }
+                    }
+                    // End Black Hole Activation Check
+                    if (game.board.players[pawnOwnerColor].finished_count === 3) {
+                        const threeFinishedComments = FUNNY_COMMENTS.threeFinished || [];
+                        if (threeFinishedComments.length > 0) {
+                            const randomComment = threeFinishedComments[Math.floor(Math.random() * threeFinishedComments.length)];
+                            const playerName = game.playerNames[pawnOwnerColor];
+                            const formattedComment = randomComment.replace("{X}", playerName);
+                            game.lastLogMessage = formattedComment;
+                            game.lastLogMessageColor = pawnOwnerColor;
+                        }
+                    }
                     if (game.board.players[pawnOwnerColor].finished_count === NUM_PAWNS_PER_PLAYER) {
                         game.round_over = true; 
                         game.round_winner = pawnOwnerColor;
                         game.status = 'roundOver'; // Added this line
                     }
+                    checkAndTriggerSecondEarthquake(game); // Added call
                     return true;
                 } else { 
                     game.board.track[currentAbsPos] = [pawnOwnerColor, pawnIndexInList]; 
@@ -303,11 +410,54 @@ function movePawn(game, pawnOwnerColor, pawnId, diceValue) {
                 opponentPawnObject.state = PAWN_STATES.HOME;
                 opponentPawnObject.position = null;
                 game.board.players[occPlayerColor].home_area_count++;
+                if (!game.playerHitTimestamps[pawnOwnerColor]) {
+                    game.playerHitTimestamps[pawnOwnerColor] = []; // Initialize if not present, as a safeguard
+                }
+                game.playerHitTimestamps[pawnOwnerColor].push(Date.now());
+                checkAndTriggerRapidHitsComment(game, pawnOwnerColor);
+                const captureComments = FUNNY_COMMENTS.capture || [];
+                if (captureComments.length > 0) {
+                    const randomComment = captureComments[Math.floor(Math.random() * captureComments.length)];
+                    const attackerName = game.playerNames[pawnOwnerColor];
+                    const victimName = game.playerNames[occPlayerColor];
+                    const formattedComment = randomComment.replace("{X}", attackerName).replace("{Y}", victimName);
+                    game.lastLogMessage = formattedComment;
+                    game.lastLogMessageColor = pawnOwnerColor;
+                }
             } else { 
                 game.board.track[currentAbsPos] = [pawnOwnerColor, pawnIndexInList]; 
                 return false;
             }
         }
+
+        // Black Hole Check
+        if (game.blackHoleModeEnabled && game.board.blackHolePosition !== null && finalDestAbsTrack === game.board.blackHolePosition) {
+            // Black hole effect:
+            pawnToMove.state = PAWN_STATES.HOME;
+            pawnToMove.position = null; 
+            game.board.players[pawnOwnerColor].home_area_count++;
+
+            // The pawn is no longer on game.board.track[finalDestAbsTrack].
+            // If a capture happened at finalDestAbsTrack, the opponent was already removed.
+            // If no capture, game.board.track[finalDestAbsTrack] should be cleared.
+            // The black hole logic ensures the spot is now null if the pawn landed there and got sent home.
+            // If an opponent was there, they were captured and sent home, and the spot was set to null before this check.
+            // If the spot was empty, it remains null.
+            // The key is that the current pawn does not occupy it.
+            game.board.track[finalDestAbsTrack] = null; // Ensure the spot is clear after pawn is sent home.
+
+            game.pawnSentHomeByExistingBlackHole = { // Added this block
+                playerColor: pawnOwnerColor,
+                playerName: game.playerNames[pawnOwnerColor],
+                pawnId: pawnToMove.id,
+                blackHolePosition: finalDestAbsTrack
+            };
+            console.log(`Pawn ${pawnToMove.id} of ${pawnOwnerColor} landed on a black hole at ${finalDestAbsTrack} and was sent home.`);
+            // Black hole remains until relocated by switchPlayer logic.
+            return true; // Move is considered complete.
+        }
+        // End Black Hole Check
+
         pawnToMove.position = finalDestAbsTrack;
         game.board.track[finalDestAbsTrack] = [pawnOwnerColor, pawnIndexInList];
         return true;
@@ -328,15 +478,67 @@ function movePawn(game, pawnOwnerColor, pawnId, diceValue) {
             pawnToMove.state = PAWN_STATES.FINISHED;
             pawnToMove.position = null;
             game.board.players[pawnOwnerColor].finished_count++;
+            // Black Hole Activation Check (when a pawn finishes)
+            if (game.blackHoleModeEnabled && !game.blackHoleHasAppearedThisRound) {
+                // pawnOwnerColor is already defined in movePawn referring to the owner of the pawn that just moved.
+                // game.board.players[pawnOwnerColor].finished_count has just been incremented.
+                if (game.board.players[pawnOwnerColor].finished_count > 0 && // Ensure count is valid
+                    game.board.players[pawnOwnerColor].finished_count <= 3 && // Check if count is 1, 2, or 3
+                    game.board.players[pawnOwnerColor].finished_count === game.blackHoleActivationPawnCountTarget) {
+                    
+                    module.exports.activateBlackHole(game); // This function sets game.board.blackHolePosition
+                    game.blackHoleHasAppearedThisRound = true;
+                    console.log(`[movePawn] Black hole activated by ${pawnOwnerColor} finishing a pawn. Target: ${game.blackHoleActivationPawnCountTarget}, CurrentFinished: ${game.board.players[pawnOwnerColor].finished_count}. New Position: ${game.board.blackHolePosition}`);
+                }
+            }
+            // End Black Hole Activation Check
+            if (game.board.players[pawnOwnerColor].finished_count === 3) {
+                const threeFinishedComments = FUNNY_COMMENTS.threeFinished || [];
+                if (threeFinishedComments.length > 0) {
+                    const randomComment = threeFinishedComments[Math.floor(Math.random() * threeFinishedComments.length)];
+                    const playerName = game.playerNames[pawnOwnerColor];
+                    const formattedComment = randomComment.replace("{X}", playerName);
+                    game.lastLogMessage = formattedComment;
+                    game.lastLogMessageColor = pawnOwnerColor;
+                }
+            }
             if (game.board.players[pawnOwnerColor].finished_count === NUM_PAWNS_PER_PLAYER) {
                 game.round_over = true; 
                 game.round_winner = pawnOwnerColor;
                 game.status = 'roundOver'; // Added this line
             }
+                    checkAndTriggerSecondEarthquake(game); // Added call
             return true;
         } else { 
             game.board.players[pawnOwnerColor].home_stretch[currentHsPos] = [pawnOwnerColor, pawnIndexInList]; 
             return false;
+        }
+    }
+    return false;
+}
+
+function checkAndTriggerSecondEarthquake(game) {
+    if (!game.earthquakeModeEnabled || game.earthquakesOccurredThisRound !== 1 || game.secondEarthquakeTriggered) {
+        return false;
+    }
+
+    let totalFinishedPawns = 0;
+    if (game.pawns && game.board && game.board.players) {
+        for (const playerColor in game.pawns) {
+            if (game.board.players[playerColor] && typeof game.board.players[playerColor].finished_count === 'number') {
+                totalFinishedPawns += game.board.players[playerColor].finished_count;
+            }
+        }
+    }
+
+    if (totalFinishedPawns >= 3) {
+        console.log(`[checkAndTriggerSecondEarthquake] Attempting to trigger second earthquake. Total finished pawns: ${totalFinishedPawns} for game ${game.gameId}`);
+        activateEarthquake(game); // This function should set game.earthquakeJustHappened = true;
+         if (game.earthquakeJustHappened) { // Check if activateEarthquake was successful
+            game.secondEarthquakeTriggered = true;
+            game.earthquakesOccurredThisRound++; // Should be 2 now
+            // game.earthquakeJustHappened is already set by activateEarthquake
+            return true;
         }
     }
     return false;
@@ -347,6 +549,11 @@ function startNextRound(game) {
     
     game.board = initializeGameBoard(game.players); // Use game.players (active colors from previous round)
     game.pawns = initializePawns(game.players);
+
+    game.activePlayerColors.forEach(color => {
+        game.playerHitTimestamps[color] = [];
+        game.playerConsecutiveNonSixRolls[color] = 0;
+    });
 
     game.current_player_index = Math.floor(Math.random() * game.num_players); // num_players is actual
     game.dice_roll = null;
@@ -359,6 +566,42 @@ function startNextRound(game) {
     // overall_game_over, overall_game_winner, playerScores, targetVictories remain.
     game.status = 'active'; // Set status to active for the new round
     console.log("New round started. Current scores:", game.playerScores);
+
+    if (game.blackHoleModeEnabled) {
+        game.blackHoleActivationPawnCountTarget = Math.floor(Math.random() * 3) + 1; // Randomly 1, 2, or 3
+        game.blackHoleHasAppearedThisRound = false;
+        if (game.board) { // Ensure board exists before trying to set blackHolePosition
+            game.board.blackHolePosition = null;
+        }
+        console.log(`[startNextRound] Black hole mode enabled. Target finished pawns for activation: ${game.blackHoleActivationPawnCountTarget}`);
+    } else {
+        game.blackHoleActivationPawnCountTarget = null;
+        game.blackHoleHasAppearedThisRound = false;
+        if (game.board) {
+            game.board.blackHolePosition = null;
+        }
+    }
+
+    // Reset Earthquake Mode flags for the new round
+    if (game.earthquakeModeEnabled) {
+        game.roundStartTime = Date.now();
+        game.earthquakesOccurredThisRound = 0;
+        game.firstEarthquakeTriggered = false;
+        game.secondEarthquakeTriggered = false;
+        // game.earthquakeActivationTurnTargets = [null, null]; // Removed
+        // game.earthquakeTargetHitFlags = [false, false]; // Removed
+        // game.currentRoundTurnCounter = 0; // Removed
+        console.log(`[startNextRound] Earthquake mode re-initialized for new round.`);
+    } else {
+        // Ensure these are reset even if mode is disabled mid-game then re-enabled for a new game
+        game.roundStartTime = null;
+        game.earthquakesOccurredThisRound = 0;
+        game.firstEarthquakeTriggered = false;
+        game.secondEarthquakeTriggered = false;
+        // game.earthquakeActivationTurnTargets = [null, null]; // Removed
+        // game.earthquakeTargetHitFlags = [false, false]; // Removed
+        // game.currentRoundTurnCounter = 0; // Removed
+    }
     return game; 
 }
 
@@ -384,6 +627,7 @@ function checkForGameVictory(game) {
 // --- Setup Phase Specific Functions ---
 
 function setGameParameters(game, numPlayers, targetVictories, playerId) {
+    game.lastActivityTime = Date.now();
     if (playerId !== game.creatorPlayerId) {
         return { success: false, error: "Only the game creator can set parameters." };
     }
@@ -418,7 +662,7 @@ function setGameParameters(game, numPlayers, targetVictories, playerId) {
         game.playersSetup = game.playersSetup.slice(0, newNumPlayersInt);
     } else if (newNumPlayersInt > oldSize) { // If expanding
          for (let i = oldSize; i < newNumPlayersInt; i++) { // Use oldSize as the starting point for adding new slots
-            game.playersSetup.push({ slotId: i, playerId: null, playerName: null, color: null, isCreator: false });
+            game.playersSetup.push({ slotId: i, playerId: null, playerName: null, color: null, isCreator: false, isAI: false });
         }
     }
 
@@ -438,6 +682,7 @@ function setGameParameters(game, numPlayers, targetVictories, playerId) {
 }
 
 function assignPlayerToSlot(game, playerId, playerName) {
+    game.lastActivityTime = Date.now();
     if (game.status !== 'setup') {
         return { success: false, error: "Players can only join during the setup phase." };
     }
@@ -460,7 +705,11 @@ function assignPlayerToSlot(game, playerId, playerName) {
             // This case indicates an issue with playersSetup initialization or modification,
             // as it should always have objects up to its current logical length.
             // For safety, create it if missing, though this hides a potential bug.
-            game.playersSetup[i] = { slotId: i, playerId: null, playerName: null, color: null, isCreator: (i===0 && playerId === game.creatorPlayerId) };
+            game.playersSetup[i] = { slotId: i, playerId: null, playerName: null, color: null, isCreator: (i===0 && playerId === game.creatorPlayerId), isAI: false };
+        }
+        // Skip AI slots for human assignment
+        if (game.playersSetup[i].isAI) {
+            continue;
         }
         if (game.playersSetup[i].playerId === null) {
             game.playersSetup[i].playerId = playerId;
@@ -483,6 +732,7 @@ function assignPlayerToSlot(game, playerId, playerName) {
 }
 
 function handlePlayerColorSelection(game, playerId, color) {
+    game.lastActivityTime = Date.now();
     if (game.status !== 'setup') {
         return { success: false, error: "Color can only be selected during setup." };
     }
@@ -495,9 +745,27 @@ function handlePlayerColorSelection(game, playerId, color) {
         return { success: false, error: "Player not found in game setup." };
     }
 
-    const isColorTaken = game.playersSetup.some(p => p.color === color && p.playerId !== playerId);
+    // Check if the color is taken by another human player OR by an AI player
+    const isColorTaken = game.playersSetup.some(p => {
+        if (p.color === color) {
+            if (p.isAI) return true; // Color taken by AI
+            if (p.playerId !== playerId) return true; // Color taken by another human
+        }
+        return false;
+    });
+
     if (isColorTaken) {
-        return { success: false, error: `Color ${color} is already taken.` };
+        // If the player attempting to take the color is the AI itself (which shouldn't happen via this function)
+        // or if the color is taken by someone else.
+        const takerIsAI = playerSlot.isAI;
+        const colorHolder = game.playersSetup.find(p => p.color === color);
+        if (takerIsAI && colorHolder && colorHolder.playerId === 'AI_PLAYER_ID'){
+            // This case means AI already has this color, which is fine.
+            // However, AI color is set at game creation, not via this function.
+            // This path should ideally not be hit for AI.
+        } else {
+            return { success: false, error: `Color ${color} is already taken.` };
+        }
     }
 
     // If player had a previous color, make it available (effectively nullify it for others)
@@ -507,6 +775,12 @@ function handlePlayerColorSelection(game, playerId, color) {
 }
 
 function removePlayer(game, playerId) {
+    if (playerId === 'AI_PLAYER_ID') {
+        // AI cannot be "removed" in the same way a human player is.
+        // This action should ideally be handled by specific game logic (e.g. ending an AI game).
+        return { success: false, error: "AI player cannot be removed via this function." };
+    }
+
     const playerIndex = game.playersSetup.findIndex(p => p.playerId === playerId);
     if (playerIndex === -1) {
         return { success: false, error: "Player not found." };
@@ -553,12 +827,19 @@ function initiateReadinessCheck(game) {
 
     game.status = 'waitingForReady';
     game.readyPlayers.clear();
-    // Creator is auto-ready (or doesn't need to confirm)
-    if(game.creatorPlayerId) game.readyPlayers.add(game.creatorPlayerId); 
+    // Creator is auto-ready
+    if(game.creatorPlayerId) game.readyPlayers.add(game.creatorPlayerId);
+    // AI players are auto-ready
+    game.playersSetup.forEach(pSlot => {
+        if (pSlot.isAI && pSlot.playerId) {
+            game.readyPlayers.add(pSlot.playerId);
+        }
+    });
     return {success: true};
 }
 
 function setPlayerReady(game, playerId) {
+    game.lastActivityTime = Date.now();
     if (game.status !== 'waitingForReady') return {success: false, error: 'Not in readiness check phase.'};
     if (playerId === game.creatorPlayerId) { // Creator doesn't confirm this way
         return {success: true, message: "Creator is implicitly ready."}; 
@@ -589,14 +870,25 @@ function checkIfAllPlayersReady(game) {
         .filter(p => p.playerId !== null)
         .map(p => p.playerId);
     
-    if (joinedPlayerIdsInSettings.length !== game.num_players_setting) return false; // Not all slots (as per setting) are filled
+    // Filter for player slots that are actually part of the game based on num_players_setting
+    const activeSlotsToCheck = game.playersSetup.slice(0, game.num_players_setting);
 
-    for (const playerId of joinedPlayerIdsInSettings) {
-        if (!game.readyPlayers.has(playerId)) {
+    if (activeSlotsToCheck.filter(p => p.playerId !== null).length !== game.num_players_setting) {
+        return false; // Not all slots (as per setting) are filled with a player (human or AI)
+    }
+
+    for (const pSlot of activeSlotsToCheck) {
+        if (pSlot.isAI) {
+            // AI is considered ready if it has a playerId (which it should if configured)
+            if (!pSlot.playerId) return false; // Should not happen for a configured AI
+            continue; // AI is auto-ready
+        }
+        // For human players, check the readyPlayers set
+        if (!game.readyPlayers.has(pSlot.playerId)) {
             return false;
         }
     }
-    return joinedPlayerIdsInSettings.length > 0; // Ensure there's at least one player if num_players_setting is 1 (though usually min 2)
+    return activeSlotsToCheck.length > 0; // Ensure there's at least one player slot configured
 }
 
 // --- Actual Game Start ---
@@ -630,6 +922,8 @@ function startGameActual(game) {
         game.activePlayerColors.push(pSetup.color);
         game.playerNames[pSetup.color] = pSetup.playerName;
         game.playerScores[pSetup.color] = 0;
+        game.playerHitTimestamps[pSetup.color] = [];
+        game.playerConsecutiveNonSixRolls[pSetup.color] = 0;
     });
 
     game.board = initializeGameBoard(game.activePlayerColors);
@@ -647,11 +941,689 @@ function startGameActual(game) {
     game.awaitingMove = false;
     game.readyPlayers.clear(); // Clear readiness set as game starts
 
+    if (game.blackHoleModeEnabled) {
+        game.blackHoleActivationPawnCountTarget = Math.floor(Math.random() * 3) + 1; // Randomly 1, 2, or 3
+        game.blackHoleHasAppearedThisRound = false;
+        if (game.board) { // Ensure board exists before trying to set blackHolePosition
+            game.board.blackHolePosition = null;
+        }
+        console.log(`[startGameActual] Black hole mode enabled. Target finished pawns for activation: ${game.blackHoleActivationPawnCountTarget}`);
+    } else {
+        game.blackHoleActivationPawnCountTarget = null;
+        game.blackHoleHasAppearedThisRound = false;
+        if (game.board) {
+            game.board.blackHolePosition = null;
+        }
+    }
+
+    // Initialize Earthquake Mode flags
+    if (game.earthquakeModeEnabled) {
+        game.roundStartTime = Date.now();
+        game.earthquakesOccurredThisRound = 0;
+        game.firstEarthquakeTriggered = false;
+        game.secondEarthquakeTriggered = false;
+        // game.earthquakeActivationTurnTargets = [null, null]; // Removed
+        // game.earthquakeTargetHitFlags = [false, false]; // Removed
+        // game.currentRoundTurnCounter = 0; // Removed
+        console.log(`[startGameActual] Earthquake mode enabled. Flags reset.`);
+    } else {
+        // Ensure these are reset even if mode is disabled then re-enabled without new instance
+        game.roundStartTime = null;
+        game.earthquakesOccurredThisRound = 0;
+        game.firstEarthquakeTriggered = false;
+        game.secondEarthquakeTriggered = false;
+        // game.earthquakeActivationTurnTargets = [null, null]; // Removed
+        // game.earthquakeTargetHitFlags = [false, false]; // Removed
+        // game.currentRoundTurnCounter = 0; // Removed
+    }
+    game.lastLogMessage = null;
+    game.lastLogMessageColor = null;
+
     return { success: true };
 }
 
+function assignColorToAI(game) {
+    const aiPlayerSlot = game.playersSetup.find(p => p.isAI === true && p.playerId === 'AI_PLAYER_ID');
+    if (!aiPlayerSlot) {
+      console.warn(`[assignColorToAI] No AI player slot found in game ${game.gameId} to assign color.`);
+      return false; // No AI player found in setup
+    }
+    if (aiPlayerSlot.color !== null) {
+      return true; // AI already has a color
+    }
+
+    let assignedColor = null;
+    for (const color of PLAYER_COLORS) {
+      const isColorTaken = game.playersSetup.some(p => p.color === color);
+      if (!isColorTaken) {
+        assignedColor = color;
+        break;
+      }
+    }
+
+    if (assignedColor) {
+      aiPlayerSlot.color = assignedColor;
+      console.log(`[assignColorToAI] Assigned color ${assignedColor} to AI player in game ${game.gameId}`);
+      return true;
+    } else {
+      console.error(`[assignColorToAI] Could not find an available color for AI player in game ${game.gameId}. All PLAYER_COLORS might be taken.`);
+      return false;
+    }
+}
+
+// --- AI Player Logic ---
+function makeAIMove(game, earthquakeJustOccurred = false) { // Added earthquakeJustOccurred parameter
+    game.lastActivityTime = Date.now();
+    game.lastLogMessage = null;
+    game.lastLogMessageColor = null;
+    
+    const aiPlayerColor = getPlayerColor(game); // Ensure this is the current AI player
+
+    // Dice Roll
+    const diceValue = rollDice();
+    game.dice_roll = diceValue;
+
+    if (diceValue === 6) {
+        game.playerConsecutiveNonSixRolls[aiPlayerColor] = 0;
+        game.consecutive_sixes_count++;
+        if (game.consecutive_sixes_count === 3) {
+            game.mustRollAgain = false; 
+            game.awaitingMove = false; 
+            return {
+                diceRoll: diceValue,
+                action: "consecutive_3_sixes",
+                playerId: aiPlayerColor, 
+                turnEnds: true,
+                reason: "Rolled 3 consecutive sixes."
+            };
+        }
+    } else { // Not a 6
+        if(game.playerConsecutiveNonSixRolls && game.playerConsecutiveNonSixRolls[aiPlayerColor] !== undefined) { 
+            game.playerConsecutiveNonSixRolls[aiPlayerColor]++;
+        } else {
+            game.playerConsecutiveNonSixRolls[aiPlayerColor] = 1; 
+        }
+        game.consecutive_sixes_count = 0; 
+        checkAndTriggerNoSixRollComment(game, aiPlayerColor); 
+    }
+
+    // Earthquake Mercy Re-roll Logic for AI
+    if (earthquakeJustOccurred && 
+        areAllPawnsHome(game, aiPlayerColor) && 
+        game.dice_roll !== 6) {
+        
+        console.log(`[makeAIMove ${game.gameId}] AI ${aiPlayerColor} granted earthquake mercy re-roll.`);
+        game.mustRollAgain = true;
+        game.awaitingMove = false; 
+        // game.threeTryAttempts is NOT incremented in this specific case.
+        game.lastLogMessage = `Computer (${aiPlayerColor}) was trapped by an earthquake! It gets a mercy re-roll.`;
+        game.lastLogMessageColor = aiPlayerColor; // Or a neutral color
+
+        return {
+            diceRoll: game.dice_roll,
+            action: "earthquake_mercy_reroll",
+            mustRollAgain: true,
+            turnEnds: false, // AI doesn't end turn, it re-rolls
+            reason: "Earthquake mercy re-roll."
+        };
+    } 
+    // Standard "All Pawns Home" Scenario
+    else if (areAllPawnsHome(game, aiPlayerColor)) {
+        // Note: game.dice_roll is from the single roll at the start of makeAIMove
+        game.threeTryAttempts++;
+
+        if (game.dice_roll === 6) {
+            // If a 6 is rolled, reset attempts, and pawn moves out.
+            game.consecutive_sixes_count = 1; // This is the first 6 in a potential new series
+            game.threeTryAttempts = 0;
+
+            const pawns = game.pawns[aiPlayerColor];
+            let pawnToMoveId = -1;
+            // Find the first pawn in the home state (any will do, as they are identical in this state)
+            for (let i = 0; i < pawns.length; i++) {
+                if (pawns[i].state === PAWN_STATES.HOME) {
+                    pawnToMoveId = pawns[i].id;
+                    break;
+                }
+            }
+
+            // It should always find a pawn home if areAllPawnsHome is true.
+            // If somehow not (which would be a state inconsistency), this move would fail.
+            // For AI, we assume valid state and proceed.
+            movePawn(game, aiPlayerColor, pawnToMoveId, 6); // movePawn updates board and pawn state
+
+            game.mustRollAgain = true; // Rolling a 6 gives another turn
+            game.awaitingMove = false; // AI's move is made
+            return {
+                diceRoll: 6,
+                movedPawnId: pawnToMoveId,
+                action: "auto_moved_from_home",
+                autoMovedFromHome: true,
+                mustRollAgain: true,
+                turnEnds: false,
+                newPosition: game.pawns[aiPlayerColor].find(p => p.id === pawnToMoveId).position,
+                newPawnState: game.pawns[aiPlayerColor].find(p => p.id === pawnToMoveId).state
+            };
+        } else {
+            // Did not roll a 6
+            if (game.threeTryAttempts >= 3) {
+                game.threeTryAttempts = 0; // Reset
+                // Turn ends, switchPlayer will be called by server
+                game.mustRollAgain = false;
+                game.awaitingMove = false;
+                return {
+                    diceRoll: game.dice_roll,
+                    action: "failed_to_roll_6_in_3_tries",
+                    turnEnds: true,
+                    reason: "Failed to roll 6 in 3 tries with all pawns home."
+                };
+            } else {
+                // Fewer than 3 tries, and not a 6. AI's turn effectively ends, but mustRollAgain is false.
+                // Server won't switch player yet based on mustRollAgain, but AI has no move.
+                // This implies the server needs to know the turn ends if no move is made.
+                // For AI, this means its current processing step is done.
+                // The game state (threeTryAttempts) is updated for the next AI attempt if it's still its turn.
+                // However, standard Ludo rules usually mean the turn passes if you can't move.
+                // Let's assume the server handles turn passing if AI returns turnEnds: true.
+                // If not a 6, and not 3rd try, the AI *must* wait for another roll *if* it were a human.
+                // For an AI, it means it will immediately "roll again" in a conceptual sense.
+                // The server logic for AI might interpret "mustRollAgain: true" as "call makeAIMove again".
+                // Let's return mustRollAgain based on the game rules if it were a human.
+                // The prompt says: "The AI must roll again (implicitly, turn doesn't switch yet)."
+                // This means the current AI's turn isn't over.
+                game.mustRollAgain = true; // Server will call makeAIMove again for this AI player.
+                game.awaitingMove = false;
+                // AI's turn doesn't end, it must "roll again" for one of its 3 tries.
+                // The server will call makeAIMove again.
+                return {
+                    diceRoll: game.dice_roll, // The non-6 roll
+                    action: "waiting_for_6_all_home",
+                    mustRollAgain: true,
+                    turnEnds: false,
+                    reason: `Rolled ${game.dice_roll}. Attempt ${game.threeTryAttempts} of 3 to roll a 6 (all pawns home).`
+                };
+            }
+        }
+    }
+
+    // If not all pawns are home OR if AI rolled a 6 while all pawns were home (and pawn was moved out)
+    // Proceed with normal turn logic (which includes handling `mustRollAgain` if a 6 was rolled)
+    const movablePawnIds = getMovablePawns(game, aiPlayerColor, game.dice_roll);
+
+    // Handle "No Movable Pawns" Scenario
+    if (movablePawnIds.length === 0) {
+        game.awaitingMove = false; // No move for AI to make.
+        if (game.dice_roll === 6) {
+            // Rolled a 6 but no pawns can be moved (e.g., all movable pawns blocked by own pawns).
+            game.mustRollAgain = true; // Gets to roll again.
+            return {
+                diceRoll: game.dice_roll,
+                action: "no_movable_pawns_rolled_6",
+                mustRollAgain: true,
+                turnEnds: false, // Turn does not pass yet.
+                reason: "No movable pawns, but rolled a 6."
+            };
+        } else {
+            // No movable pawns and not a 6, turn ends.
+            game.mustRollAgain = false;
+            // switchPlayer(game); // Server will handle this.
+            return {
+                diceRoll: game.dice_roll,
+                action: "no_movable_pawns_not_6",
+                turnEnds: true,
+                reason: "No movable pawns and did not roll a 6."
+            };
+        }
+    }
+
+    // If there are movable pawns, proceed to select and move one.
+    let chosenPawnId = -1;
+    let bestProgressPawn = -1; 
+    let maxProgressScore = -1; 
+
+    // Priority 1: Capture opponent's pawn
+    let potentialCaptures = [];
+    for (const pawnId of movablePawnIds) {
+        const pawn = game.pawns[aiPlayerColor].find(p => p.id === pawnId);
+        if (!pawn) continue;
+
+        let targetPos = -1;
+        let targetState = pawn.state;
+
+        if (pawn.state === PAWN_STATES.HOME) { // This case is for moving out of home
+            if (game.dice_roll === 6) {
+                targetPos = PLAYER_START_POSITIONS[aiPlayerColor];
+                targetState = PAWN_STATES.ACTIVE;
+            } else {
+                continue; // Cannot move from home without a 6
+            }
+        } else if (pawn.state === PAWN_STATES.ACTIVE) {
+            let tempNewAbsPos = pawn.position;
+            let entersHs = false;
+            for (let i = 0; i < game.dice_roll; i++) {
+                const playerHomeEntry = PLAYER_PATH_END_BEFORE_HOME_STRETCH[aiPlayerColor];
+                if (tempNewAbsPos === playerHomeEntry) {
+                    const remainingMoves = game.dice_roll - (i + 1);
+                    // We only care about captures on the main track for this priority
+                    entersHs = true;
+                    break;
+                }
+                tempNewAbsPos = (tempNewAbsPos + 1) % TRACK_LENGTH;
+            }
+            if (!entersHs) {
+                targetPos = tempNewAbsPos;
+            }
+        } else if (pawn.state === PAWN_STATES.HOMESTRETCH) {
+            // Cannot capture on home stretch
+            continue;
+        }
+
+        if (targetState === PAWN_STATES.ACTIVE && targetPos !== -1) {
+            const occupant = game.board.track[targetPos];
+            if (occupant && occupant[0] !== aiPlayerColor) { // Occupied by an opponent
+                potentialCaptures.push(pawnId);
+            }
+        }
+    }
+
+    if (potentialCaptures.length > 0) {
+        // If multiple capture opportunities, pick one randomly for now.
+        // Later, could add more sophisticated choice (e.g., which capture is "better")
+        chosenPawnId = potentialCaptures[Math.floor(Math.random() * potentialCaptures.length)];
+    }
+
+    // Priority 2: Move pawn from home (if dice roll is 6)
+    // This is considered if no capture was prioritized, or if capture pawn was not home pawn.
+    // Note: The "All Pawns Home" scenario already handles moving from home if it's the *only* option.
+    // This priority here is for when there might be other pawns on the board, but moving a new one out is desirable.
+    if (chosenPawnId === -1 && game.dice_roll === 6) {
+        const homePawnsMovable = movablePawnIds.filter(pawnId => {
+            const pawn = game.pawns[aiPlayerColor].find(p => p.id === pawnId);
+            return pawn && pawn.state === PAWN_STATES.HOME;
+        });
+        if (homePawnsMovable.length > 0) {
+            // Prefer moving a pawn from home if a 6 is rolled and no capture is available.
+            // If multiple home pawns are somehow movable (should be only one unless start is blocked by own), pick one.
+            chosenPawnId = homePawnsMovable[0];
+            // No specific capture check needed here as it's moving to start or potentially capturing at start.
+            // The earlier capture logic would have handled capture-at-start if it was an opponent.
+            // If it's an own pawn at start, getMovablePawns should have excluded it.
+        }
+    }
+
+    // Priority 3: Move pawn closest to finishing
+    if (chosenPawnId === -1) {
+        // bestProgressPawn and maxProgressScore are already declared
+        // Reset them here if necessary for this block's logic
+        maxProgressScore = -1; 
+        bestProgressPawn = -1; 
+
+        for (const pawnId of movablePawnIds) {
+            const pawn = game.pawns[aiPlayerColor].find(p => p.id === pawnId);
+            if (!pawn || pawn.state === PAWN_STATES.HOME || pawn.state === PAWN_STATES.FINISHED) continue;
+
+            let score = 0;
+            if (pawn.state === PAWN_STATES.HOMESTRETCH) {
+                // Higher score for being on home stretch, closer to finish
+                score = TRACK_LENGTH + HOME_STRETCH_LENGTH + pawn.position;
+            } else if (pawn.state === PAWN_STATES.ACTIVE) {
+                // Score based on position on main track.
+                // Need to handle wraparound for different player colors to measure progress towards their specific home entry.
+                const homeEntry = PLAYER_PATH_END_BEFORE_HOME_STRETCH[aiPlayerColor];
+                const startPos = PLAYER_START_POSITIONS[aiPlayerColor];
+
+                if (startPos > homeEntry) { // Path wraps around the board (e.g. Blue, Yellow)
+                    if (pawn.position >= startPos) {
+                        score = pawn.position - startPos;
+                    } else { // pawn.position < homeEntry (already wrapped around)
+                        score = (TRACK_LENGTH - startPos) + pawn.position;
+                    }
+                } else { // Path does not wrap around (e.g. Red, Green)
+                    score = pawn.position - startPos;
+                    if (score < 0) score = 0; // Should not happen if pawn is active and past start
+                }
+                 // Ensure pawns closer to their home entry (but not yet on HS) get higher scores.
+                 // This basic score is distance from start. To make it "progress", we can invert or use total length.
+                 // Let's use distance to home entry. Lower is better. So we want to maximize (TRACK_LENGTH - distance_to_home_entry)
+                 // Or simply, distance from current position to PLAYER_PATH_END_BEFORE_HOME_STRETCH[aiPlayerColor]
+                 // A pawn at position 45 for Red (home entry 47) is closer than pawn at 5.
+                 // Score: current absolute position, adjusted for "how far along its specific path it is".
+                 // A simpler metric: just raw pawn.position might be okay if combined with homestretch priority.
+                 // Let's refine: score is how many steps it has taken on its path towards home stretch.
+
+                let stepsTaken = 0;
+                if (pawn.position >= startPos) { // Standard case
+                    stepsTaken = pawn.position - startPos;
+                } else { // Wrapped around case (e.g. for Blue, start 36, current pos 5)
+                    stepsTaken = (TRACK_LENGTH - startPos) + pawn.position;
+                }
+                 // This doesn't quite order by "closest to finishing" if paths are different lengths before HS.
+                 // Let's use a direct measure of steps *remaining* to reach home stretch entry.
+
+                let currentPos = pawn.position;
+                let stepsToHomeEntry = 0;
+                while(currentPos !== homeEntry) {
+                    currentPos = (currentPos + 1) % TRACK_LENGTH;
+                    stepsToHomeEntry++;
+                    if (stepsToHomeEntry > TRACK_LENGTH) break; // Safety break
+                }
+                score = TRACK_LENGTH - stepsToHomeEntry; // Higher score for fewer steps remaining
+            }
+
+            if (score > maxProgressScore) {
+                maxProgressScore = score;
+                bestProgressPawn = pawnId;
+            }
+        }
+        if (bestProgressPawn !== -1) {
+            chosenPawnId = bestProgressPawn;
+        }
+    }
+
+    // Priority 4: Random selection (if no other strategy chose a pawn)
+    if (chosenPawnId === -1 && movablePawnIds.length > 0) {
+        chosenPawnId = movablePawnIds[Math.floor(Math.random() * movablePawnIds.length)];
+    }
+
+    // Execute Move and Return AI's Action
+    if (chosenPawnId !== -1) {
+        const pawnBeforeMove = game.pawns[aiPlayerColor].find(p => p.id === chosenPawnId);
+        const originalState = pawnBeforeMove ? pawnBeforeMove.state : null;
+
+        const moveSuccessful = movePawn(game, aiPlayerColor, chosenPawnId, game.dice_roll);
+
+        if (moveSuccessful) {
+            game.awaitingMove = false;
+            const movedPawn = game.pawns[aiPlayerColor].find(p => p.id === chosenPawnId);
+
+            let action = "selected_move_other"; // Default action
+            if (potentialCaptures.includes(chosenPawnId)) {
+                action = "selected_move_capture";
+            } else if (originalState === PAWN_STATES.HOME && game.dice_roll === 6) { // Pawn moved from home
+                action = "selected_move_from_home";
+            } else if (chosenPawnId === bestProgressPawn && maxProgressScore > -1) { // Check if chosen by progress logic
+                action = "selected_move_progress";
+            } else if (chosenPawnId !== -1) { // If chosen by other means (e.g. random, or only one movable)
+                action = "selected_move_random_or_single"; // More descriptive general fallback
+            }
+
+            // Determine if a capture happened.
+            // This is tricky without movePawn returning it.
+            // A simple heuristic: if an opponent pawn is no longer at the destination square
+            // and AI pawn is there now, a capture likely occurred.
+            // This is still imperfect. `movePawn` ideally should return capture status.
+            // For now, we'll stick to the `potentialCaptures` check for the `capturedPawn` flag.
+            const capturedPawn = potentialCaptures.includes(chosenPawnId);
+
+            game.mustRollAgain = (game.dice_roll === 6 && game.consecutive_sixes_count < 3);
+
+            return {
+                diceRoll: game.dice_roll,
+                movedPawnId: chosenPawnId,
+                newPosition: movedPawn.position,
+                newPawnState: movedPawn.state,
+                capturedPawn: capturedPawn,
+                mustRollAgain: game.mustRollAgain,
+                turnEnds: !game.mustRollAgain,
+                action: action
+            };
+        } else {
+            // This case implies an issue with game logic if a movable pawn fails to move.
+            console.error(`AI Error: Move for chosen pawn ${chosenPawnId} by AI ${aiPlayerColor} failed unexpectedly.`);
+            // Fall through to return a "no move" action if this rare case occurs.
+        }
+    }
+
+    // If no pawn was chosen (e.g. movablePawnIds was empty initially, though handled) or move failed.
+    game.awaitingMove = false; // AI's turn processing is complete.
+    // If dice_roll was 6 but no move could be made (e.g. all spots blocked by own pawns), AI should roll again.
+    // This was handled in the "No Movable Pawns" section. If we reach here, it means a move should have been possible.
+    // So, if chosenPawnId is -1 at this point, it means something went wrong or no valid pawn from movable list.
+    return {
+        diceRoll: game.dice_roll,
+        aiPlayerColor: aiPlayerColor,
+        action: "no_valid_move_chosen_or_execution_failed",
+        turnEnds: true,
+        mustRollAgain: false // Should not get another roll if a move was expected but failed at selection/execution
+    };
+}
 
 // --- Game State Access and Modification Functions ---
+
+function activateBlackHole(game) {
+    if (!game.blackHoleModeEnabled || game.status !== 'active' || !game.board) {
+        if (game.board) game.board.blackHolePosition = null; // Ensure it's cleared if mode disabled mid-game or status changes
+        return;
+    }
+
+    const excludedPositions = new Set();
+    if (game.activePlayerColors && game.activePlayerColors.length > 0) {
+        game.activePlayerColors.forEach(color => {
+            if (PLAYER_START_POSITIONS[color] !== undefined) {
+                excludedPositions.add(PLAYER_START_POSITIONS[color]);
+            }
+            if (PLAYER_PATH_END_BEFORE_HOME_STRETCH[color] !== undefined) {
+                // This is the cell *before* home stretch, often a safe zone or an entry point.
+                // Depending on rules, this might be excludable. For now, let's exclude it.
+                excludedPositions.add(PLAYER_PATH_END_BEFORE_HOME_STRETCH[color]);
+            }
+        });
+    }
+
+    // Also exclude any positions currently occupied by a pawn that is on its own start cell.
+    // (Though start cells are already in excludedPositions, this is a more general safety for "safe start spots")
+    // This specific rule ("occupied by a pawn of the same color as the cell's 'owner' if it's a start cell")
+    // is mostly covered by excluding all PLAYER_START_POSITIONS. A simpler approach is to exclude all occupied cells.
+    // For now, let's stick to the defined safe zones (start and entry to home stretch).
+    // A more complex rule might be to exclude any cell that is a start position AND occupied by that color's pawn.
+    // However, PLAYER_START_POSITIONS are absolute track indices, so they are already excluded.
+
+    const possiblePositions = [];
+    for (let i = 0; i < TRACK_LENGTH; i++) {
+        if (!excludedPositions.has(i)) {
+            possiblePositions.push(i);
+        }
+    }
+
+    if (possiblePositions.length > 0) {
+        const randomIndex = Math.floor(Math.random() * possiblePositions.length);
+        game.board.blackHolePosition = possiblePositions[randomIndex];
+        game.justActivatedBlackHolePosition = game.board.blackHolePosition; // Added this line
+        console.log(`[activateBlackHole] Black hole activated at position: ${game.board.blackHolePosition}. Valid positions were: [${possiblePositions.join(', ')}]. Excluded: [${Array.from(excludedPositions).join(', ')}]`);
+
+        // Check if the black hole position is occupied
+        if (game.board.track[game.board.blackHolePosition] !== null) {
+            const [occPlayerColor, occPawnListIndex] = game.board.track[game.board.blackHolePosition];
+            const pawnToReturn = game.pawns[occPlayerColor][occPawnListIndex];
+
+            // Update pawn state
+            pawnToReturn.state = PAWN_STATES.HOME;
+            pawnToReturn.position = null;
+
+            // Increment home_area_count
+            game.board.players[occPlayerColor].home_area_count++;
+
+            // Clear the track position
+            game.board.track[game.board.blackHolePosition] = null;
+
+            game.pawnSentHomeByNewBlackHole = { // Added this block
+                playerColor: occPlayerColor,
+                playerName: game.playerNames[occPlayerColor],
+                pawnId: pawnToReturn.id,
+                blackHolePosition: game.board.blackHolePosition
+            };
+            console.log(`[activateBlackHole] Pawn ${pawnToReturn.id} of player ${occPlayerColor} was at the black hole position ${game.board.blackHolePosition} and sent home.`);
+            // TODO: Consider returning information about the pawn sent home, e.g., { pawnId: pawnToReturn.id, ownerColor: occPlayerColor }
+        }
+
+    } else {
+        game.board.blackHolePosition = null; // Should ideally not happen if TRACK_LENGTH > excludedPositions.size
+        console.log(`[activateBlackHole] No valid positions found for black hole. Excluded: [${Array.from(excludedPositions).join(', ')}]`);
+    }
+}
+
+function activateEarthquake(game) {
+    if (!game.earthquakeModeEnabled) { // Removed game.earthquakeHasOccurredThisRound
+        return;
+    }
+    console.log(`[activateEarthquake] Triggering PURE PAWN SWAP earthquake for game ${game.gameId}`);
+
+    const playerColors = [...game.activePlayerColors]; // Use activePlayerColors which is the list of colors in play
+    if (playerColors.length < 2) {
+        console.log("[activateEarthquake] Not enough active players to swap pawns. No action taken.");
+        return; 
+    }
+
+    // Create a shuffled version of playerColors to determine the mapping.
+    // Player at playerColors[i] will give their pawns to player at shuffledPlayerColorsForMapping[i]
+    let shuffledPlayerColorsForMapping = [...playerColors];
+    for (let i = shuffledPlayerColorsForMapping.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffledPlayerColorsForMapping[i], shuffledPlayerColorsForMapping[j]] = [shuffledPlayerColorsForMapping[j], shuffledPlayerColorsForMapping[i]];
+    }
+
+    // Ensure no player gets their own pawns back, if possible.
+    let needsRemap = true;
+    let attempts = 0; // Prevent infinite loop in edge cases, though unlikely with current logic
+    while (needsRemap && attempts < 10) {
+        needsRemap = false;
+        let selfMappedCount = 0;
+        for (let i = 0; i < playerColors.length; i++) {
+            if (playerColors[i] === shuffledPlayerColorsForMapping[i]) {
+                selfMappedCount++;
+            }
+        }
+
+        if (selfMappedCount === playerColors.length && playerColors.length > 1) {
+            // All players map to themselves, force a cyclic shift
+            // (e.g., P0's pawns -> P1, P1's pawns -> P2, ..., Pn-1's pawns -> P0)
+            const lastPlayerOriginalPawnsTarget = shuffledPlayerColorsForMapping[0]; // P0 will get pawns from P(n-1)
+            for (let i = 0; i < playerColors.length - 1; i++) {
+                shuffledPlayerColorsForMapping[i] = shuffledPlayerColorsForMapping[i + 1];
+            }
+            shuffledPlayerColorsForMapping[playerColors.length - 1] = lastPlayerOriginalPawnsTarget;
+            // This guarantees no self-mapping if length > 1
+            break; 
+        } else if (selfMappedCount > 0) {
+            // Some self-mapping, try reshuffle
+            for (let i = shuffledPlayerColorsForMapping.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [shuffledPlayerColorsForMapping[i], shuffledPlayerColorsForMapping[j]] = [shuffledPlayerColorsForMapping[j], shuffledPlayerColorsForMapping[i]];
+            }
+            needsRemap = true; // Re-check the new shuffle
+        }
+        attempts++;
+    }
+    
+    // pawnSetSourceMap: key is the NEW owner (playerColor), value is the ORIGINAL owner (shuffledPlayerColorsForMapping[i]) whose pawns they get.
+    // Example: { "Red": "Blue", "Blue": "Red" } means Red player now gets Blue's original pawns.
+    const pawnSetSourceMap = {};
+    for (let i = 0; i < playerColors.length; i++) {
+        // playerColors[i] is the player (e.g. Red). They will get pawns from shuffledPlayerColorsForMapping[i] (e.g. Blue)
+        pawnSetSourceMap[playerColors[i]] = shuffledPlayerColorsForMapping[i];
+    }
+    console.log("[activateEarthquake] Pawn Set Source Map (NewOwnerColor gets pawns From ThisOriginalOwnerColor):", pawnSetSourceMap);
+
+    const newPawnCollections = {}; // Stores { "PlayerColor": [actual pawn objects] }
+
+    // Create new collections of pawns based on the source map
+    for (const newOwnerColor of playerColors) {
+        const originalOwnerOfThesePawns = pawnSetSourceMap[newOwnerColor];
+        // Deep copy the pawns from the original owner to the new owner's collection
+        if (game.pawns[originalOwnerOfThesePawns]) {
+            newPawnCollections[newOwnerColor] = JSON.parse(JSON.stringify(game.pawns[originalOwnerOfThesePawns]));
+        } else {
+            console.warn(`[activateEarthquake] No pawns found for original owner ${originalOwnerOfThesePawns} when assigning to ${newOwnerColor}`);
+            newPawnCollections[newOwnerColor] = []; // Assign empty array if source is missing
+        }
+    }
+
+    // Assign the new pawn collections to the game state
+    game.pawns = newPawnCollections;
+
+    // --- Rebuild Board Representation and Counts ---
+    // Clear current board state (track and home stretches)
+    game.board.track = Array(TRACK_LENGTH).fill(null);
+    playerColors.forEach(color => {
+        if (game.board.players[color]) {
+            game.board.players[color].home_stretch = Array(HOME_STRETCH_LENGTH).fill(null);
+        } else {
+            console.warn(`[activateEarthquake] game.board.players[${color}] missing during home_stretch clear.`);
+        }
+    });
+
+    // Recalculate counts and update board track/home stretch based on new pawn ownership
+    playerColors.forEach(pColor => { // pColor is the player who now OWNS these pawns
+        let homeCount = 0;
+        let finishedCount = 0;
+        if (game.pawns[pColor]) {
+            game.pawns[pColor].forEach((pawn, pawnIndex) => {
+                // The pawn object itself (state, position) is from its original owner,
+                // but it's now logically owned by pColor.
+                if (pawn.state === PAWN_STATES.ACTIVE && pawn.position !== null) {
+                    game.board.track[pawn.position] = [pColor, pawnIndex]; // Mark with new owner pColor
+                } else if (pawn.state === PAWN_STATES.HOMESTRETCH && pawn.position !== null) {
+                    // Pawns on a home stretch are on *their specific colored path*.
+                    // If Red's pawns (now owned by Blue) were on Red's home stretch, they are no longer on a valid HS for Blue.
+                    // This interpretation of "pure pawn swap" means pawns on an opponent's HS become 'active' again,
+                    // or are sent home if that's too complex.
+                    // For simplicity: If a pawn is on a home_stretch that doesn't match its new owner's color,
+                    // it should be moved back to its start or treated as 'active' at a nearby equivalent.
+                    //
+                    // Simpler rule: Pawns keep their absolute position if on main track.
+                    // Pawns on a home_stretch or in home/finished state are relative to their *new* owner.
+                    // This means if Red had a pawn on its HS at index 1, and Blue gets Red's pawns,
+                    // that pawn is now on Blue's HS at index 1. This is what JSON.parse(JSON.stringify) would achieve
+                    // if the pawn object's 'position' for HS is relative.
+                    // Let's assume pawn.position for HOMESTRETCH is its index on *any* home stretch.
+                    // The `game.board.players[pColor].home_stretch` is the specific stretch for `pColor`.
+                    if (game.board.players[pColor]) {
+                        game.board.players[pColor].home_stretch[pawn.position] = [pColor, pawnIndex];
+                    } else {
+                         console.warn(`[activateEarthquake] game.board.players[${pColor}] missing for home_stretch update of pawn ${pawnIndex}.`);
+                    }
+                }
+
+                if (pawn.state === PAWN_STATES.HOME) homeCount++;
+                if (pawn.state === PAWN_STATES.FINISHED) finishedCount++;
+            });
+        } else {
+            console.warn(`[activateEarthquake] game.pawns[${pColor}] missing during count and board rebuild.`);
+        }
+        
+        if (game.board.players[pColor]) {
+            game.board.players[pColor].home_area_count = homeCount;
+            game.board.players[pColor].finished_count = finishedCount;
+        } else {
+            console.warn(`[activateEarthquake] game.board.players[${pColor}] missing for count update.`);
+        }
+    });
+
+    // game.earthquakeHasOccurredThisRound = true; // Commented out
+    game.earthquakeJustHappened = true; 
+    // Player identities (playerNames, playersSetup[i].color, turn order game.players) DO NOT CHANGE.
+    console.log(`[activateEarthquake] PURE PAWN SWAP Earthquake completed. Players retain their colors and turn order. Pawns have been re-assigned.`);
+}
+
+function checkAndTriggerFirstEarthquake(game) {
+    if (!game.earthquakeModeEnabled || game.earthquakesOccurredThisRound !== 0 || game.firstEarthquakeTriggered) {
+        return false;
+    }
+    if (Date.now() - game.roundStartTime >= 45000) { // 45 seconds
+        // Random chance, e.g., 1 in 3 for demonstration. This can be configured.
+        if (Math.random() < 1/3) {
+            console.log(`[checkAndTriggerFirstEarthquake] Attempting to trigger first earthquake for game ${game.gameId}`);
+            activateEarthquake(game); // This function should set game.earthquakeJustHappened = true;
+            if (game.earthquakeJustHappened) { // Check if activateEarthquake was successful (e.g. not blocked internally)
+                game.firstEarthquakeTriggered = true;
+                game.earthquakesOccurredThisRound++; // Should be 1 now
+                // game.earthquakeJustHappened is already set by activateEarthquake
+                return true;
+            }
+        }
+    }
+    return false;
+}
 
 // getGameState should be a method of the game instance or a function taking it
 // For now, we'll make it a separate function.
@@ -688,10 +1660,130 @@ function getGameState(game) {
         baseState.threeTryAttempts = game.threeTryAttempts;
         baseState.mustRollAgain = game.mustRollAgain;
         baseState.awaitingMove = game.awaitingMove;
+        baseState.blackHoleModeEnabled = game.blackHoleModeEnabled;
+        baseState.blackHolePosition = game.board ? game.board.blackHolePosition : null;
+
+        // Earthquake mode flags
+        baseState.earthquakeModeEnabled = game.earthquakeModeEnabled;
+        baseState.earthquakesOccurredThisRound = game.earthquakesOccurredThisRound; // Updated name
+        // baseState.earthquakeActivationTurnTargets = game.earthquakeActivationTurnTargets; // Removed
+        baseState.lastLogMessage = game.lastLogMessage;
+        baseState.lastLogMessageColor = game.lastLogMessageColor;
+        if (game.earthquakeJustHappened) { // Stays the same
+            baseState.earthquakeJustHappened = true;
+        }
     }
     return baseState;
 }
 
+function checkAndTriggerRapidHitsComment(game, attackerPlayerColor) {
+    if (!game.playerHitTimestamps || !game.playerHitTimestamps[attackerPlayerColor]) {
+        return; // No hit data for this player
+    }
+
+    const rapidHitsComments = FUNNY_COMMENTS.rapidHits || [];
+    if (rapidHitsComments.length === 0) {
+        return; // No "rapidHits" comments defined
+    }
+
+    const now = Date.now();
+    const recentHits = game.playerHitTimestamps[attackerPlayerColor].filter(timestamp => {
+        return (now - timestamp) <= 45000; // 45 seconds window
+    });
+
+    if (recentHits.length >= 2) {
+        const playerName = game.playerNames[attackerPlayerColor];
+        if (!playerName) {
+            console.error(`Player name not found for color: ${attackerPlayerColor} when triggering rapid hits comment.`);
+            return;
+        }
+        const randomComment = rapidHitsComments[Math.floor(Math.random() * rapidHitsComments.length)];
+        const formattedComment = randomComment.replace("{playerName}", playerName);
+
+        game.lastLogMessage = formattedComment;
+        game.lastLogMessageColor = attackerPlayerColor; // Or a generic color if preferred
+
+        // Clear hits for this player to prevent immediate re-triggering for the same sequence
+        game.playerHitTimestamps[attackerPlayerColor] = [];
+        // Alternatively, to only clear the hits that contributed to this trigger:
+        // game.playerHitTimestamps[attackerPlayerColor] = game.playerHitTimestamps[attackerPlayerColor].filter(timestamp => (now - timestamp) > 45000);
+        // For simplicity, let's clear all for now as per the plan.
+    }
+}
+
+function checkAndTriggerNoSixRollComment(game, playerColor) {
+    const noSixComments = FUNNY_COMMENTS.noSixInEightRolls || [];
+    if (noSixComments.length === 0) {
+        return false; // No comments defined
+    }
+
+    if (game.playerConsecutiveNonSixRolls[playerColor] >= 8) {
+        const playerName = game.playerNames[playerColor];
+        if (!playerName) {
+            console.error(`Player name not found for color: ${playerColor} when triggering no-six comment.`);
+            return false;
+        }
+        const randomComment = noSixComments[Math.floor(Math.random() * noSixComments.length)];
+        const formattedComment = randomComment.replace("{playerName}", playerName);
+
+        game.lastLogMessage = formattedComment;
+        game.lastLogMessageColor = playerColor; // Or a generic color
+
+        game.playerConsecutiveNonSixRolls[playerColor] = 0; // Reset count
+        return true; // Comment was triggered
+    }
+    return false; // Condition not met
+}
+
+function processPlayerRoll(game, playerColor, diceValue) {
+    game.lastActivityTime = Date.now();
+    game.lastLogMessage = null;
+    game.lastLogMessageColor = null;
+    game.dice_roll = diceValue; // Set the game's dice_roll state
+
+    if (diceValue === 6) {
+        game.playerConsecutiveNonSixRolls[playerColor] = 0;
+        game.consecutive_sixes_count++;
+        if (game.consecutive_sixes_count === 3) {
+            // Logic for 3 consecutive sixes (turn ends, switch player)
+            game.mustRollAgain = false;
+            game.awaitingMove = false;
+            // Server will call switchPlayer based on this outcome
+            return { turnEnds: true, reason: "Rolled 3 consecutive sixes." };
+        }
+        game.mustRollAgain = true; // Roll again on a 6 (if not 3rd)
+    } else {
+        game.playerConsecutiveNonSixRolls[playerColor]++;
+        game.consecutive_sixes_count = 0;
+        game.mustRollAgain = false; // Turn usually doesn't grant another roll for non-six
+        checkAndTriggerNoSixRollComment(game, playerColor);
+    }
+
+    // Determine if player can move (similar to start of makeAIMove)
+    if (areAllPawnsHome(game, playerColor) && diceValue !== 6) {
+        game.threeTryAttempts++;
+        if (game.threeTryAttempts >= 3) {
+            game.threeTryAttempts = 0;
+            // Turn ends, switchPlayer will be called by server
+            return { turnEnds: true, reason: "Failed to roll 6 in 3 tries with all pawns home." };
+        }
+        // Player must roll again (implicitly, turn doesn't switch yet for these 3 tries)
+        game.mustRollAgain = true;
+        return { turnEnds: false, mustRollAgain: true, reason: `Rolled ${diceValue}. Attempt ${game.threeTryAttempts} of 3 to roll a 6.` };
+    }
+
+    const movablePawns = getMovablePawns(game, playerColor, diceValue);
+    if (movablePawns.length === 0) {
+        if (game.mustRollAgain) { // e.g. rolled a 6 but no moves
+             return { turnEnds: false, mustRollAgain: true, reason: "No movable pawns, but rolled a 6 (or must roll again)." };
+        }
+        // No movable pawns and not a 6 (or not required to roll again), turn ends
+        return { turnEnds: true, reason: "No movable pawns." };
+    }
+
+    game.awaitingMove = true; // Player can make a move
+    return { turnEnds: false, awaitingMove: true, movablePawns: movablePawns };
+}
 
 // --- Module Exports ---
 module.exports = {
@@ -728,7 +1820,17 @@ module.exports = {
     setPlayerReady,
     getReadyPlayersStatus,
     checkIfAllPlayersReady,
-    startGameActual
+    startGameActual,
+    makeAIMove, // Export the new AI function
+    assignColorToAI, // Export assignColorToAI
+    activateBlackHole, // Export for testing purposes
+    activateEarthquake, // Add the new function here
+    checkAndTriggerFirstEarthquake, // Added new function
+    checkAndTriggerSecondEarthquake, // Added new function
+    checkAndTriggerRapidHitsComment, // Added for potential testing
+    FUNNY_COMMENTS, // Export for testing purposes
+    processPlayerRoll,
+    checkAndTriggerNoSixRollComment
 };
 
 // --- Basic Test Block (optional, for direct execution with node) ---

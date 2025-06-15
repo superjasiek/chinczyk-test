@@ -1,0 +1,18 @@
+{
+  "capture": [
+    "gracz {X} nie miał litości dla gracza {Y}",
+    "gracz {X} to niezła gnida"
+  ],
+  "threeFinished": [
+    "gracz {X} jest o włos od zwycięstwa",
+    "gracz {X} pozostawił wszystkich w tyle"
+  ],
+  "rapidHits": [
+    "{playerName} co za jebaniec",
+    "{playerName} co za menda",
+    "{playerName} ale urwał"
+  ],
+  "noSixInEightRolls": [
+    "{playerName} nie ma dziś szczęścia do szóstek"
+  ]
+}
