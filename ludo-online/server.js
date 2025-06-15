@@ -1,8 +1,26 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
+const fs = require('fs'); // Added fs module
 
+const LEADERBOARD_FILE = './leaderboard.json'; // Added leaderboard file constant
 let globalPlayerScores = {};
+
+// Load leaderboard data
+try {
+  if (fs.existsSync(LEADERBOARD_FILE)) {
+    const leaderboardData = fs.readFileSync(LEADERBOARD_FILE, 'utf8');
+    globalPlayerScores = JSON.parse(leaderboardData);
+    console.log('Leaderboard data loaded successfully.');
+  } else {
+    console.log('No leaderboard file found. A new one will be created when scores are updated.');
+    globalPlayerScores = {}; // Initialize with empty object
+  }
+} catch (error) {
+  console.error('Error loading leaderboard data:', error);
+  globalPlayerScores = {}; // Default to empty object on error
+}
+
 const { createLudoGameInstance, getGameState, ...ludoGameLogic } = require('./game_logic/ludoGame'); // Destructure game logic functions
 const cors = require('cors'); 
 
@@ -66,7 +84,7 @@ app.get('/api/leaderboard', (req, res) => {
 io.on('connection', (socket) => {
   console.log(`User connected: ${socket.id}`);
 
-  socket.on('createGame', ({ playerName }) => { // Destructure playerName from data
+  socket.on('createGame', ({ playerName, enableAI }) => { // Destructure playerName and enableAI
     const gameId = `game${nextGameId++}`;
     const creatorPlayerId = socket.id;
 
@@ -76,9 +94,21 @@ io.on('connection', (socket) => {
     }
     const trimmedPlayerName = playerName.trim();
 
-    const game = createLudoGameInstance(gameId, trimmedPlayerName, creatorPlayerId);
+    const gameOptions = { enableAI: !!enableAI }; // Ensure enableAI is a boolean
+    const game = createLudoGameInstance(gameId, trimmedPlayerName, creatorPlayerId, gameOptions);
     activeGames[gameId] = game;
+    game.lastActivityTime = Date.now();
     
+    // If AI is enabled, and num_players_setting is not yet set, default it to 2.
+    // This helps simplify UI logic for joining, as an AI game is typically 1v1.
+    if (gameOptions.enableAI && game.playersSetup.find(p=>p.isAI)) {
+        if(game.num_players_setting === null) { // Only set if not already set
+            // Set to 2 players (1 human, 1 AI) by default for AI games.
+            // Creator can change this later if game logic supports AI in >2 player games.
+            ludoGameLogic.setGameParameters(game, 2, game.targetVictories_setting || 1, creatorPlayerId);
+        }
+    }
+
     socket.gameId = gameId; // Store gameId on socket for disconnect and other events
     socket.playerId = creatorPlayerId; // Store playerId on socket as well
 
@@ -100,6 +130,10 @@ io.on('connection', (socket) => {
     const game = activeGames[gameId];
     const joiningPlayerId = socket.id;
 
+    if (game) {
+        game.lastActivityTime = Date.now();
+    }
+
     if (!playerName || typeof playerName !== 'string' || playerName.trim() === '') {
         socket.emit('actionError', { message: 'Player name is required for joining.' });
         return;
@@ -115,6 +149,20 @@ io.on('connection', (socket) => {
       socket.emit('actionError', { message: 'Game is not in setup phase or already started.'});
       return;
     }
+
+    // Check if game is a 2-player AI game and already has its human player (the creator)
+    const hasAI = game.playersSetup.some(p => p.isAI);
+    if (hasAI && game.num_players_setting === 2) {
+        const humanPlayerCount = game.playersSetup.filter(p => p.playerId !== null && !p.isAI).length;
+        // If the creator (a human) is present and another human tries to join a 2-player AI game
+        if (humanPlayerCount >= 1 && joiningPlayerId !== game.creatorPlayerId) {
+             socket.emit('actionError', { message: 'This is a 1v1 game against AI and is already full.' });
+             return;
+        }
+        // If for some reason a second human tries to join before creator, also block if creator slot is empty but AI means it's a 1v1.
+        // This scenario is less likely if creator always joins first.
+    }
+
 
     const assignResult = ludoGameLogic.assignPlayerToSlot(game, joiningPlayerId, trimmedPlayerName);
 
@@ -152,7 +200,22 @@ io.on('connection', (socket) => {
     const game = activeGames[gameId];
 
     if (!game) return socket.emit('actionError', { message: 'Game not found.' });
+    game.lastActivityTime = Date.now();
     if (game.status !== 'active') return socket.emit('actionError', {message: 'Game not active.'});
+
+    // Call for first earthquake check
+    let earthquakeJustOccurred = ludoGameLogic.checkAndTriggerFirstEarthquake(game);
+    // Assuming checkAndTriggerSecondEarthquake also returns a boolean indicating if it occurred.
+    // And that it should also be considered for mercy re-roll.
+    earthquakeJustOccurred = earthquakeJustOccurred || ludoGameLogic.checkAndTriggerSecondEarthquake(game);
+
+    if (checkAndEmitEarthquake(gameId, game, io)) { // This helper emits 'earthquakeActivated' if game.earthquakeJustHappened was true
+        // If an earthquake happened, the game state might have changed significantly.
+        // The client needs the updated state before proceeding with further turn logic.
+        io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
+        // Depending on game rules, an earthquake might end the current action or turn.
+        // For now, we assume the turn continues unless the earthquake logic itself ends the turn.
+    }
 
 
     const playerColor = socket.playerColor; // This needs to be the actual color of the player from game.playersSetup
@@ -171,21 +234,34 @@ io.on('connection', (socket) => {
     }
     game.mustRollAgain = false; 
 
-    let diceResult;
+    // Roll dice first
+    let diceResult = ludoGameLogic.rollDice();
+    game.dice_roll = diceResult;
 
-    if (ludoGameLogic.areAllPawnsHome(game, actualPlayerColor)) {
+    // Earthquake Mercy Re-roll Logic
+    if (earthquakeJustOccurred &&
+        ludoGameLogic.areAllPawnsHome(game, actualPlayerColor) &&
+        game.dice_roll !== 6) {
+
+        console.log(`[rollDice ${gameId}] Player ${actualPlayerColor} granted earthquake mercy re-roll.`);
+        game.mustRollAgain = true;
+        game.awaitingMove = false;
+        // game.threeTryAttempts is NOT incremented in this specific case.
+        game.lastLogMessage = "Earthquake trapped your pawns! You get a mercy re-roll.";
+        game.lastLogMessageColor = actualPlayerColor;
+
+    } else if (ludoGameLogic.areAllPawnsHome(game, actualPlayerColor)) { // Standard "all pawns home" logic
         game.threeTryAttempts++;
-        diceResult = ludoGameLogic.rollDice();
-        game.dice_roll = diceResult;
+        // Dice already rolled and set to game.dice_roll
         
-        if (diceResult === 6) {
+        if (game.dice_roll === 6) {
             game.consecutive_sixes_count = 1; 
             game.threeTryAttempts = 0; 
             const homePawns = game.pawns[actualPlayerColor].filter(p => p.state === ludoGameLogic.PAWN_STATES.HOME);
             if (homePawns.length > 0) {
                 const pawnToMoveId = homePawns[0].id; 
-                ludoGameLogic.movePawn(game, actualPlayerColor, pawnToMoveId, diceResult);
-                io.to(gameId).emit('pawnMoved', { playerColor: actualPlayerColor, pawnId: pawnToMoveId, diceValue: diceResult, newPos: game.pawns[actualPlayerColor].find(p=>p.id === pawnToMoveId).position, autoMoved: true });
+                ludoGameLogic.movePawn(game, actualPlayerColor, pawnToMoveId, game.dice_roll); // Use game.dice_roll
+                io.to(gameId).emit('pawnMoved', { playerColor: actualPlayerColor, pawnId: pawnToMoveId, diceValue: game.dice_roll, newPos: game.pawns[actualPlayerColor].find(p=>p.id === pawnToMoveId).position, autoMoved: true });
             }
             game.mustRollAgain = true; 
             game.awaitingMove = false; 
@@ -193,39 +269,67 @@ io.on('connection', (socket) => {
             if (game.threeTryAttempts === 3) {
                 game.threeTryAttempts = 0;
                 ludoGameLogic.switchPlayer(game);
-                io.to(gameId).emit('turnChanged', { currentPlayer: ludoGameLogic.getPlayerColor(game) });
+                // No need to call checkAndEmitEarthquake here again as it was done after the earthquake trigger itself.
+                // The mercy roll logic specifically applies *after* an earthquake has just occurred and been processed.
+                const newCurrentPlayerColor = ludoGameLogic.getPlayerColor(game);
+                io.to(gameId).emit('turnChanged', { currentPlayer: newCurrentPlayerColor });
+                if (game.status === 'active') {
+                    const nextPlayerSlot = game.playersSetup.find(p => p.color === newCurrentPlayerColor);
+                    if (nextPlayerSlot && nextPlayerSlot.isAI) {
+                        console.log(`[rollDice ${gameId}] Human (all home, 3 tries no 6) turn ended, next player ${newCurrentPlayerColor} is AI. Triggering AI move.`);
+                        setTimeout(() => triggerAIMove(gameId, game), 500);
+                    }
+                }
             } else {
                 game.mustRollAgain = true; 
                 game.awaitingMove = false; 
             }
         }
-    } else { 
-        diceResult = ludoGameLogic.rollDice();
-        game.dice_roll = diceResult;
+    } else { // Standard "pawns on board" logic
+        // Dice already rolled and set to game.dice_roll
 
-        if (diceResult === 6) {
+        if (game.dice_roll === 6) {
             game.consecutive_sixes_count++;
         } else {
             game.consecutive_sixes_count = 0;
         }
 
         if (game.consecutive_sixes_count === 3) {
-            io.to(gameId).emit('rolledThreeSixes', { playerColor: actualPlayerColor, diceResult });
+            io.to(gameId).emit('rolledThreeSixes', { playerColor: actualPlayerColor, diceResult: game.dice_roll }); // Use game.dice_roll
             ludoGameLogic.switchPlayer(game);
-            io.to(gameId).emit('turnChanged', { currentPlayer: ludoGameLogic.getPlayerColor(game) });
+            // No need to call checkAndEmitEarthquake here again.
+            const newCurrentPlayerColor = ludoGameLogic.getPlayerColor(game);
+            io.to(gameId).emit('turnChanged', { currentPlayer: newCurrentPlayerColor });
+            if (game.status === 'active') {
+                const nextPlayerSlot = game.playersSetup.find(p => p.color === newCurrentPlayerColor);
+                if (nextPlayerSlot && nextPlayerSlot.isAI) {
+                    console.log(`[rollDice ${gameId}] Human (3 sixes) turn ended, next player ${newCurrentPlayerColor} is AI. Triggering AI move.`);
+                    setTimeout(() => triggerAIMove(gameId, game), 500);
+                }
+            }
         } else {
-            const movablePawns = ludoGameLogic.getMovablePawns(game, actualPlayerColor, diceResult);
+            const movablePawns = ludoGameLogic.getMovablePawns(game, actualPlayerColor, game.dice_roll); // Use game.dice_roll
             if (movablePawns.length === 0) {
-                if (diceResult !== 6) { 
+                if (game.dice_roll !== 6) {
                     ludoGameLogic.switchPlayer(game);
-                    io.to(gameId).emit('turnChanged', { currentPlayer: ludoGameLogic.getPlayerColor(game) });
+                    // No need to call checkAndEmitEarthquake here again.
+                    const newCurrentPlayerColor = ludoGameLogic.getPlayerColor(game);
+                    io.to(gameId).emit('turnChanged', { currentPlayer: newCurrentPlayerColor });
+                    if (game.status === 'active') {
+                        const nextPlayerSlot = game.playersSetup.find(p => p.color === newCurrentPlayerColor);
+                        if (nextPlayerSlot && nextPlayerSlot.isAI) {
+                            console.log(`[rollDice ${gameId}] Human (no movable pawns, not 6) turn ended, next player ${newCurrentPlayerColor} is AI. Triggering AI move.`);
+                            setTimeout(() => triggerAIMove(gameId, game), 500);
+                        }
+                    }
                 } else { 
                     game.mustRollAgain = true;
                 }
             } else { 
                 game.awaitingMove = true;
                 if (movablePawns.length === 1) {
-                     io.to(gameId).emit('diceRolled', { playerColor: actualPlayerColor, diceValue: diceResult, consecutiveSixes: game.consecutive_sixes_count, mustRollAgain: game.mustRollAgain, awaitingMove: game.awaitingMove, singleMovePawnId: movablePawns[0] });
+                     // diceResult variable is out of scope here, use game.dice_roll
+                     io.to(gameId).emit('diceRolled', { playerColor: actualPlayerColor, diceValue: game.dice_roll, consecutiveSixes: game.consecutive_sixes_count, mustRollAgain: game.mustRollAgain, awaitingMove: game.awaitingMove, singleMovePawnId: movablePawns[0] });
                      io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
                      return; 
                 }
@@ -233,7 +337,8 @@ io.on('connection', (socket) => {
         }
     }
     
-    io.to(gameId).emit('diceRolled', { playerColor: actualPlayerColor, diceValue: diceResult, consecutiveSixes: game.consecutive_sixes_count, mustRollAgain: game.mustRollAgain, awaitingMove: game.awaitingMove });
+    // diceResult variable is out of scope here, use game.dice_roll for emitting
+    io.to(gameId).emit('diceRolled', { playerColor: actualPlayerColor, diceValue: game.dice_roll, consecutiveSixes: game.consecutive_sixes_count, mustRollAgain: game.mustRollAgain, awaitingMove: game.awaitingMove });
     io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
   });
 
@@ -242,7 +347,16 @@ io.on('connection', (socket) => {
     const game = activeGames[gameId];
     
     if (!game) return socket.emit('actionError', { message: 'Game not found.' });
+    game.lastActivityTime = Date.now();
     if (game.status !== 'active') return socket.emit('actionError', {message: 'Game not active.'});
+
+    // Call for first earthquake check
+    ludoGameLogic.checkAndTriggerFirstEarthquake(game);
+    if (checkAndEmitEarthquake(gameId, game, io)) {
+        io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
+        // Similar considerations as in rollDice: does the earthquake interrupt the planned pawn move?
+        // For now, assume the pawn move will proceed on the (potentially) altered board state.
+    }
 
     const currentPlayerSlot = game.playersSetup.find(p => p.playerId === socket.playerId);
     if (!currentPlayerSlot || !currentPlayerSlot.color) {
@@ -270,6 +384,26 @@ io.on('connection', (socket) => {
         const pawnMovedDetails = game.pawns[playerColor].find(p=>p.id === numericPawnId);
         io.to(gameId).emit('pawnMoved', { playerColor, pawnId: numericPawnId, diceValue, newPos: pawnMovedDetails ? pawnMovedDetails.position : null, newState: pawnMovedDetails ? pawnMovedDetails.state : null });
         
+        // Check for black hole activation and immediate hit
+        if (game.justActivatedBlackHolePosition) {
+            console.log(`[${gameId}] Emitting blackHoleActivated. Position: ${game.justActivatedBlackHolePosition}`);
+            io.to(gameId).emit('blackHoleActivated', { position: game.justActivatedBlackHolePosition });
+            game.justActivatedBlackHolePosition = null; // Reset flag
+
+            if (game.pawnSentHomeByNewBlackHole) {
+                console.log(`[${gameId}] Emitting playerHitBlackHole (due to new activation). Player: ${game.pawnSentHomeByNewBlackHole.playerName}, Pawn: ${game.pawnSentHomeByNewBlackHole.pawnId}`);
+                io.to(gameId).emit('playerHitBlackHole', game.pawnSentHomeByNewBlackHole);
+                game.pawnSentHomeByNewBlackHole = null; // Reset flag
+            }
+        }
+
+        // Check for hitting an existing black hole
+        if (game.pawnSentHomeByExistingBlackHole) {
+            console.log(`[${gameId}] Emitting playerHitBlackHole (existing). Player: ${game.pawnSentHomeByExistingBlackHole.playerName}, Pawn: ${game.pawnSentHomeByExistingBlackHole.pawnId}`);
+            io.to(gameId).emit('playerHitBlackHole', game.pawnSentHomeByExistingBlackHole);
+            game.pawnSentHomeByExistingBlackHole = null; // Reset flag
+        }
+
         game.dice_roll = null;
 
         if (game.round_over) { 
@@ -295,26 +429,105 @@ io.on('connection', (socket) => {
                 const winnerName = game.playerNames[game.overall_game_winner];
                 if (winnerName) {
                     globalPlayerScores[winnerName] = (globalPlayerScores[winnerName] || 0) + 2; // Simplified scoring
+                    // Save updated leaderboard
+                    fs.writeFile(LEADERBOARD_FILE, JSON.stringify(globalPlayerScores, null, 2), (err) => {
+                        if (err) {
+                            console.error('Error saving leaderboard data:', err);
+                        } else {
+                            console.log('Leaderboard data saved successfully.');
+                        }
+                    });
                 }
                 // Do NOT delete activeGames[gameId] here.
                 // Do NOT return here; allow the final gameStateUpdate to be sent.
-            } else {
-                game.awaitingNextRoundConfirmationFrom = game.round_winner;
+                // Ensure gameStateUpdate is sent to reflect final gameOver status.
+                io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
+            } else { // Overall game is not over
+                const roundWinnerColor = game.round_winner;
+                const roundWinnerIsAI = game.playersSetup.some(p => p.color === roundWinnerColor && p.isAI);
+
+                if (roundWinnerIsAI) {
+                    console.log(`[${gameId}] Human's move resulted in AI player ${roundWinnerColor} winning the round. Automatically starting next round.`);
+                    ludoGameLogic.startNextRound(game);
+                    io.to(gameId).emit('nextRoundStarted', { message: 'Next round starting automatically as AI won previous.' });
+                    io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
+
+                    const newCurrentPlayerColor = ludoGameLogic.getPlayerColor(game);
+                    const newCurrentPlayerIsAI = game.playersSetup.some(p => p.color === newCurrentPlayerColor && p.isAI);
+                    if (newCurrentPlayerIsAI && game.status === 'active') {
+                        console.log(`[${gameId}] New current player ${newCurrentPlayerColor} is AI. Triggering AI move for new round.`);
+                        setTimeout(() => triggerAIMove(gameId, game), 1000);
+                    }
+                } else {
+                    // Human winner, existing logic: wait for confirmNextRound event
+                    game.awaitingNextRoundConfirmationFrom = game.round_winner;
+                    io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
+                }
             }
-        } else { 
+        } else { // Round is not over
             if (diceValue === 6 && game.consecutive_sixes_count < 3) {
                 game.mustRollAgain = true;
-            } else {
-                ludoGameLogic.switchPlayer(game);
-                io.to(gameId).emit('turnChanged', { currentPlayer: ludoGameLogic.getPlayerColor(game) });
+            } else { // Turn ends
+                // If a lastLogMessage (e.g., from capture) was generated by the player's move,
+                // send it now before it's cleared by switchPlayer.
+                if (game.lastLogMessage) {
+                    io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
+                }
+
+                ludoGameLogic.switchPlayer(game); // Clears lastLogMessage for the next player's state
+
+                // Handle potential earthquake after player switch.
+                // checkAndEmitEarthquake will emit its own 'earthquakeActivated' event
+                // and potentially a gameStateUpdate if an earthquake happens.
+                checkAndEmitEarthquake(gameId, game, io);
+
+                const newCurrentPlayerColor = ludoGameLogic.getPlayerColor(game);
+                io.to(gameId).emit('turnChanged', { currentPlayer: newCurrentPlayerColor });
+
+                // Check if the new player is AI
+                if (game.status === 'active') { // Ensure game is still active
+                    const nextPlayerSlot = game.playersSetup.find(p => p.color === newCurrentPlayerColor);
+                    if (nextPlayerSlot && nextPlayerSlot.isAI) {
+                        console.log(`[movePawn ${gameId}] Human turn ended, next player ${newCurrentPlayerColor} is AI. Triggering AI move.`);
+                        setTimeout(() => triggerAIMove(gameId, game), 500);
+                    }
+                }
             }
         }
     } else {
+        // moveValid is false
         socket.emit('actionError', { message: 'Invalid move.' });
-        game.awaitingMove = true; 
+
+        const movablePawns = ludoGameLogic.getMovablePawns(game, playerColor, game.dice_roll);
+
+        if (movablePawns.length === 0) {
+            game.awaitingMove = false;
+            // Check for consecutive sixes count; assume game.consecutive_sixes_count is updated by rollDice
+            if (game.dice_roll === 6 && game.consecutive_sixes_count < 3) {
+                game.mustRollAgain = true;
+            } else {
+                // Not a 6, or it was the 3rd six (which should have been handled in rollDice, but as a fallback)
+                // Or, if it was a 6 but no movable pawns and it's not the 3rd six (which implies mustRollAgain was set true)
+                // This path means the turn should switch.
+                ludoGameLogic.switchPlayer(game);
+                checkAndEmitEarthquake(gameId, game, io); // Check for earthquake after player switch
+                const newCurrentPlayerColor = ludoGameLogic.getPlayerColor(game);
+                io.to(gameId).emit('turnChanged', { currentPlayer: newCurrentPlayerColor });
+                if (game.status === 'active') {
+                    const nextPlayerSlot = game.playersSetup.find(p => p.color === newCurrentPlayerColor);
+                    if (nextPlayerSlot && nextPlayerSlot.isAI) {
+                        console.log(`[movePawn ${gameId}] Invalid move, no movable pawns, player ${playerColor} turn ended. Next player ${newCurrentPlayerColor} is AI. Triggering AI move.`);
+                        setTimeout(() => triggerAIMove(gameId, game), 500);
+                    }
+                }
+            }
+        } else {
+            // Movable pawns exist, player must make a valid move
+            game.awaitingMove = true; 
+        }
     }
     
-    io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) }); 
+    io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
   });
 
   socket.on('creatorFinalizeSettings', (data) => {
@@ -322,6 +535,7 @@ io.on('connection', (socket) => {
     const game = activeGames[gameId];
 
     if (!game) return socket.emit('actionError', { message: 'Game not found.' });
+    game.lastActivityTime = Date.now();
     if (socket.id !== game.creatorPlayerId) return socket.emit('actionError', { message: 'Only creator can finalize settings.' });
     if (game.status !== 'setup') return socket.emit('actionError', { message: 'Game not in setup phase.' });
 
@@ -340,6 +554,7 @@ io.on('connection', (socket) => {
     const game = activeGames[gameId];
 
     if (!game) return socket.emit('actionError', { message: 'Game not found.' });
+    game.lastActivityTime = Date.now();
     if (game.status !== 'setup') return socket.emit('actionError', { message: 'Cannot select color outside of setup phase.' });
     
     // Player ID is from the socket that sent the event
@@ -348,6 +563,19 @@ io.on('connection', (socket) => {
     if (result.success) {
       // Update playerColor on socket for older handlers if they rely on it (though ideally they use playerId)
       socket.playerColor = color; 
+
+      // If an AI player exists and doesn't have a color yet, try to assign one
+      if (game.playersSetup.some(p => p.isAI && p.color === null)) {
+        const aiColorAssigned = ludoGameLogic.assignColorToAI(game);
+        if (aiColorAssigned) {
+          console.log(`[selectColor ${gameId}] AI color automatically assigned after human selection.`);
+        } else {
+          // This is a potential issue, but game state update will proceed.
+          // initiateReadinessCheck might fail later if AI color is still null.
+          console.error(`[selectColor ${gameId}] AI player exists but could not be assigned a color.`);
+        }
+      }
+
       io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
     } else {
       socket.emit('actionError', { message: result.error || 'Failed to select color.' });
@@ -355,46 +583,111 @@ io.on('connection', (socket) => {
   });
 
   socket.on('creatorRequestsGameStart', (data) => {
-    const { gameId, settings } = data; // Destructure settings
+    const { gameId, settings } = data;
     const game = activeGames[gameId];
 
-    if (!game) return socket.emit('actionError', { message: 'Game not found.' });
-    if (socket.id !== game.creatorPlayerId) return socket.emit('actionError', { message: 'Only creator can start the game.' });
-    if (game.status !== 'setup') return socket.emit('actionError', { message: 'Game not in setup phase.' });
+    if (!game) { socket.emit('actionError', { message: 'Game not found.' }); return; }
+    game.lastActivityTime = Date.now();
+    if (socket.id !== game.creatorPlayerId) { socket.emit('actionError', { message: 'Only creator can start the game.' }); return; }
+    if (game.status !== 'setup') { socket.emit('actionError', { message: 'Game not in setup phase.' }); return; }
 
-    // If settings are provided, attempt to set them
-    if (settings && settings.numPlayers && settings.targetVictories) {
-      const setResult = ludoGameLogic.setGameParameters(game, settings.numPlayers, settings.targetVictories, socket.id);
-      if (!setResult.success) {
-        // Emit error and return if settings are invalid or could not be set
-        socket.emit('actionError', { message: setResult.error || 'Invalid game settings provided.' });
-        return; // Stop further execution
-      }
-      // If settings were successfully applied, the game state will be updated by setGameParameters.
-      // We can optionally emit a gameStateUpdate here if setGameParameters doesn't already do it sufficiently for all clients.
-      // For now, assume setGameParameters handles necessary emissions or the subsequent gameStateUpdate for readiness check is enough.
+    console.log(`[creatorRequestsGameStart ${gameId}] Received data:`, JSON.stringify(data, null, 2)); // Log entire data object
+
+    if (settings) {
+        console.log(`[creatorRequestsGameStart ${gameId}] Received settings object:`, JSON.stringify(settings, null, 2));
+        const { numPlayers, targetVictories, blackHoleMode, earthquakeMode } = settings; // Destructure earthquakeMode
+
+        if (numPlayers && targetVictories) {
+            const setResult = ludoGameLogic.setGameParameters(game, numPlayers, targetVictories, socket.id);
+            if (!setResult.success) {
+                socket.emit('actionError', { message: setResult.error || 'Invalid game settings provided.' });
+                return;
+            }
+            console.log(`[creatorRequestsGameStart ${gameId}] blackHoleMode from client settings: ${blackHoleMode}`);
+            game.blackHoleModeEnabled = !!blackHoleMode;
+            console.log(`[creatorRequestsGameStart ${gameId}] game.blackHoleModeEnabled was set to: ${game.blackHoleModeEnabled}`);
+            
+            game.earthquakeModeEnabled = !!earthquakeMode; // Set earthquakeModeEnabled
+            console.log(`[creatorRequestsGameStart ${gameId}] game.earthquakeModeEnabled was set to: ${game.earthquakeModeEnabled}`);
+        } else {
+            console.log(`[creatorRequestsGameStart ${gameId}] numPlayers or targetVictories missing in settings. game.blackHoleModeEnabled remains: ${game.blackHoleModeEnabled}`);
+            // If critical settings are missing, earthquakeMode might also not be processed or default.
+            game.earthquakeModeEnabled = false; 
+            console.log(`[creatorRequestsGameStart ${gameId}] Critical settings missing. game.earthquakeModeEnabled defaulted to: ${game.earthquakeModeEnabled}`);
+        }
+    } else {
+        console.log(`[creatorRequestsGameStart ${gameId}] No settings object received. game.blackHoleModeEnabled remains: ${game.blackHoleModeEnabled}`);
+        game.earthquakeModeEnabled = false; 
+        console.log(`[creatorRequestsGameStart ${gameId}] No settings object received. game.earthquakeModeEnabled defaulted to: ${game.earthquakeModeEnabled}`);
+    }
+
+    // Assign color to AI if it doesn't have one yet
+    if (game.playersSetup.some(p => p.isAI && p.color === null)) {
+        const aiColorAssigned = ludoGameLogic.assignColorToAI(game);
+        if (!aiColorAssigned) {
+            console.error(`[creatorRequestsGameStart ${gameId}] Failed to assign color to AI opponent. Cannot start.`);
+            socket.emit('actionError', { message: 'Failed to assign color to AI opponent. Ensure not all colors are taken by humans if AI is enabled.' });
+            return; // Prevent game start
+        }
+        console.log(`[creatorRequestsGameStart ${gameId}] AI color assigned before readiness check.`);
+        // Send an immediate state update so clients see AI's color before readiness prompt
+        io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
     }
 
     // Proceed with readiness check
     const readinessCheckResult = ludoGameLogic.initiateReadinessCheck(game);
 
     if (!readinessCheckResult.success) {
-        return socket.emit('actionError', { message: readinessCheckResult.error || "Cannot start readiness check." });
+        // If initiateReadinessCheck fails (e.g. not all players have colors, incl. AI), emit error.
+        // This could happen if assignColorToAI failed silently or conditions weren't met for players.
+        socket.emit('actionError', { message: readinessCheckResult.error || "Cannot start readiness check (e.g., not all players have colors)." });
+        return;
     }
     
     // Clear any existing timer for this game, just in case
     if (game.readinessTimerId) {
         clearTimeout(game.readinessTimerId);
+        game.readinessTimerId = null;
     }
-    game.readinessTimerId = setTimeout(() => handleReadinessTimeout(gameId, io), READINESS_TIMEOUT_SECONDS * 1000);
-    
-    const payload = {
-        timeout: READINESS_TIMEOUT_SECONDS, 
-        initialReadyStatus: ludoGameLogic.getReadyPlayersStatus(game) 
-    };
-    console.log(`[${gameId}] Emitting 'initiateReadinessCheck'. Payload: `, payload);
-    io.to(gameId).emit('initiateReadinessCheck', payload);
-    io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) }); // Reflects status change to 'waitingForReady'
+
+    // After initiating readiness, check if all players are already ready
+    // This is especially relevant for 1 Human + 1 AI games where AI is auto-ready
+    // and creator is auto-ready.
+    if (ludoGameLogic.checkIfAllPlayersReady(game)) {
+        console.log(`[${gameId}] All players (including AI if any) are ready immediately after creator start. Starting game.`);
+        const startResult = ludoGameLogic.startGameActual(game);
+        if (startResult.success) {
+            io.to(gameId).emit('readinessCheckOutcome', { success: true, message: "All players ready, game starting." });
+            io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) }); // Game is now 'active'
+            // Check if first player is AI and trigger their move
+            if (game.status === 'active') {
+                const firstPlayerColor = ludoGameLogic.getPlayerColor(game);
+                const firstPlayerSlot = game.playersSetup.find(p => p.color === firstPlayerColor);
+                if (firstPlayerSlot && firstPlayerSlot.isAI) {
+                    console.log(`[creatorRequestsGameStart ${gameId}] Game started, first player ${firstPlayerColor} is AI. Triggering AI move.`);
+                    setTimeout(() => triggerAIMove(gameId, game), 500);
+                }
+            }
+        } else {
+            // This case should ideally not happen if checkIfAllPlayersReady was true
+            game.status = 'setup'; // Revert
+            game.readyPlayers.clear();
+            socket.emit('actionError', { message: startResult.error || 'Failed to start game immediately after readiness check.' });
+            io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
+        }
+    } else {
+        // Not all players are ready yet (e.g., games with more than 1 human player)
+        // Proceed with the timeout logic for other players to confirm.
+        game.readinessTimerId = setTimeout(() => handleReadinessTimeout(gameId, io), READINESS_TIMEOUT_SECONDS * 1000);
+
+        const payload = {
+            timeout: READINESS_TIMEOUT_SECONDS,
+            initialReadyStatus: ludoGameLogic.getReadyPlayersStatus(game)
+        };
+        console.log(`[${gameId}] Emitting 'initiateReadinessCheck' for other players. Payload: `, payload);
+        io.to(gameId).emit('initiateReadinessCheck', payload);
+        io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) }); // Reflects status change to 'waitingForReady'
+    }
   });
 
   socket.on('playerReady', (data) => {
@@ -402,6 +695,7 @@ io.on('connection', (socket) => {
     const game = activeGames[gameId];
 
     if (!game) return socket.emit('actionError', { message: 'Game not found.' });
+    game.lastActivityTime = Date.now();
     if (game.status !== 'waitingForReady') return socket.emit('actionError', { message: 'Not in readiness check phase.' });
     if (socket.id === game.creatorPlayerId) return socket.emit('actionError', { message: 'Creator does not confirm readiness this way.'}); // Creator is auto-ready
 
@@ -424,6 +718,15 @@ io.on('connection', (socket) => {
         if (startResult.success) {
             io.to(gameId).emit('readinessCheckOutcome', { success: true });
             io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) }); // Game is now 'active'
+            // Check if first player is AI
+            if (game.status === 'active') {
+                const firstPlayerColor = ludoGameLogic.getPlayerColor(game);
+                const firstPlayerSlot = game.playersSetup.find(p => p.color === firstPlayerColor);
+                if (firstPlayerSlot && firstPlayerSlot.isAI) {
+                    console.log(`[playerReady ${gameId}] Game started, first player ${firstPlayerColor} is AI. Triggering AI move.`);
+                    setTimeout(() => triggerAIMove(gameId, game), 500);
+                }
+            }
         } else {
             // This case should ideally not happen if checkIfAllPlayersReady was true and startGameActual conditions are aligned
             game.status = 'setup'; // Revert
@@ -439,6 +742,7 @@ io.on('connection', (socket) => {
     const game = activeGames[gameId];
     
     if (!game) return socket.emit('actionError', { message: 'Game not found.' });
+    game.lastActivityTime = Date.now();
     
     const currentPlayerSlot = game.playersSetup.find(p => p.playerId === socket.playerId);
     if (!currentPlayerSlot || !currentPlayerSlot.color) {
@@ -454,7 +758,16 @@ io.on('connection', (socket) => {
     game.awaitingNextRoundConfirmationFrom = null; 
 
     io.to(gameId).emit('nextRoundStarted', { message: 'Next round starting.' });
-    io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) }); 
+    io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
+
+    // After starting the next round, check if the new current player is an AI
+    const newCurrentPlayerColor = ludoGameLogic.getPlayerColor(game);
+    const newCurrentPlayerIsAI = game.playersSetup.some(p => p.color === newCurrentPlayerColor && p.isAI);
+
+    if (newCurrentPlayerIsAI && game.status === 'active') {
+        console.log(`[${gameId}] New round started after human confirmation. Current player ${newCurrentPlayerColor} is AI. Triggering AI move.`);
+        setTimeout(() => triggerAIMove(gameId, game), 500); // Short delay for UX
+    }
   });
 
 
@@ -465,6 +778,8 @@ io.on('connection', (socket) => {
 
     if (gameId && activeGames[gameId]) {
       const game = activeGames[gameId];
+      // Update activity time if a player disconnects and the game is affected
+      game.lastActivityTime = Date.now();
       const removalResult = ludoGameLogic.removePlayer(game, playerId);
 
       if (removalResult.success) {
@@ -495,14 +810,20 @@ io.on('connection', (socket) => {
                 }
             }
         } else if (game.status === 'active') {
-            // Handle if game should end due to disconnection (e.g., < 2 players)
-            const activePlayerCount = game.playersSetup.filter(p => p.playerId !== null && p.color !== null).length;
-            if (activePlayerCount < 2) { // Assuming 2 is min for active game
-                console.log(`Game ${gameId} has less than 2 players, ending game.`);
-                // Potentially set status to gameOver or just delete
-                io.to(gameId).emit('actionError', { message: "Game ended due to insufficient players."}); // Notify remaining
-                delete activeGames[gameId];
+            const hasAI = game.playersSetup.some(p => p.isAI);
+            const humanPlayers = game.playersSetup.filter(p => p.playerId !== null && !p.isAI && p.color !== null);
+            const activeHumanPlayerCount = humanPlayers.length;
+
+            if (hasAI && activeHumanPlayerCount === 0) {
+                console.log(`Game ${gameId} vs AI: Human player disconnected. Ending game.`);
+                io.to(gameId).emit('gameEndedNotification', { message: "Human player disconnected. Game ended." });
+                delete activeGames[gameId]; // Remove the game
                 return;
+            } else if (activeHumanPlayerCount + (hasAI ? 1 : 0) < 2 && !hasAI) { // For human-only games, or if AI logic implies it can't continue
+                 console.log(`Game ${gameId} has less than 2 active players, ending game.`);
+                 io.to(gameId).emit('gameEndedNotification', { message: "Game ended due to insufficient players."});
+                 delete activeGames[gameId];
+                 return;
             }
         }
         
@@ -525,6 +846,7 @@ io.on('connection', (socket) => {
     if (!game) {
         return socket.emit('actionError', { message: 'Game not found for chat.' });
     }
+    game.lastActivityTime = Date.now();
     
     const playerSlot = game.playersSetup.find(p => p.playerId === socket.id);
     if (!playerSlot || !playerSlot.color) { // Player must be in a slot and have a color to chat
@@ -567,6 +889,15 @@ function handleReadinessTimeout(gameId, ioInstance) {
         if (startResult.success) {
             ioInstance.to(gameId).emit('readinessCheckOutcome', { success: true });
             ioInstance.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
+            // Check if first player is AI
+            if (game.status === 'active') {
+                const firstPlayerColor = ludoGameLogic.getPlayerColor(game);
+                const firstPlayerSlot = game.playersSetup.find(p => p.color === firstPlayerColor);
+                if (firstPlayerSlot && firstPlayerSlot.isAI) {
+                    console.log(`[ReadinessTimeout ${gameId}] Game started, first player ${firstPlayerColor} is AI. Triggering AI move.`);
+                    setTimeout(() => triggerAIMove(gameId, game), 500);
+                }
+            }
         } else {
             // Should not happen if checkIfAllPlayersReady was true and logic is sound
             game.status = 'setup'; 
@@ -582,9 +913,275 @@ function handleReadinessTimeout(gameId, ioInstance) {
     }
 }
 
+// --- Earthquake Event Helper ---
+function checkAndEmitEarthquake(gameId, game, ioInstance) {
+    if (game.earthquakeJustHappened) {
+        console.log(`[${gameId}] Earthquake detected! Emitting 'earthquakeActivated'.`);
+        ioInstance.to(gameId).emit('earthquakeActivated', {
+            message: "Trzęsienie Ziemi! Pionki zmieniły swój kolor. Jesteśmy zgubieni!"
+            // newPlayerNames and newPlayerTurnOrderColors are removed
+        });
+        game.earthquakeJustHappened = false; // Reset the flag
+        return true; // Indicates earthquake was handled
+    }
+    return false; // No earthquake
+}
 
 server.listen(PORT, () => {
   console.log(`Ludo server listening on *:${PORT}`);
+  startInactivityCheck(); // Start the inactivity checker
 });
 
-module.exports = { app, server, io, activeGames }; // Export activeGames for potential inspection/testing
+// --- Game Inactivity Checker ---
+const GAME_INACTIVITY_TIMEOUT = 30 * 60 * 1000; // 30 minutes
+const CHECK_INACTIVITY_INTERVAL = 5 * 60 * 1000; // 5 minutes
+let inactivityCheckIntervalId = null;
+
+function checkInactiveGames() {
+    console.log('[InactivityCheck] Checking for inactive games...');
+    const now = Date.now();
+    Object.keys(activeGames).forEach(gameId => {
+        const game = activeGames[gameId];
+        if (game && game.lastActivityTime) {
+            if (now - game.lastActivityTime > GAME_INACTIVITY_TIMEOUT) {
+                console.log(`[InactivityCheck] Game ${gameId} is inactive. Destroying.`);
+                io.to(gameId).emit('gameDestroyed', { gameId, reason: `Game inactive for over ${GAME_INACTIVITY_TIMEOUT / 60 / 1000} minutes.` });
+
+                // Clean up sockets in the room before deleting the game
+                const roomSockets = io.sockets.adapter.rooms.get(gameId);
+                if (roomSockets) {
+                    roomSockets.forEach(socketId => {
+                        const socketInstance = io.sockets.sockets.get(socketId);
+                        if (socketInstance) {
+                            socketInstance.leave(gameId);
+                            // Optionally, perform other cleanup specific to each socket if needed
+                        }
+                    });
+                }
+                delete activeGames[gameId];
+            }
+        } else if (game && !game.lastActivityTime) {
+            // If a game somehow exists without a lastActivityTime, set it now so it can be timed out in the future.
+            // This could happen if games were created before this feature was added and not yet updated.
+            console.warn(`[InactivityCheck] Game ${gameId} found without lastActivityTime. Initializing it now.`);
+            game.lastActivityTime = now;
+        }
+    });
+}
+
+function startInactivityCheck() {
+    if (inactivityCheckIntervalId) {
+        clearInterval(inactivityCheckIntervalId);
+    }
+    inactivityCheckIntervalId = setInterval(checkInactiveGames, CHECK_INACTIVITY_INTERVAL);
+    console.log(`Inactivity check started. Interval: ${CHECK_INACTIVITY_INTERVAL / 60 / 1000} mins, Timeout: ${GAME_INACTIVITY_TIMEOUT / 60 / 1000} mins.`);
+}
+
+function stopInactivityCheck() {
+    if (inactivityCheckIntervalId) {
+        clearInterval(inactivityCheckIntervalId);
+        inactivityCheckIntervalId = null;
+        console.log('Inactivity check stopped.');
+    }
+}
+
+module.exports = {
+    app,
+    server,
+    io,
+    activeGames,
+    stopInactivityCheck,
+    checkInactiveGames, // Export for testing
+    GAME_INACTIVITY_TIMEOUT, // Export for testing
+    // Note: nextGameId is not exported as it's an internal counter managed by server.js
+};
+
+// --- AI Turn Management ---
+async function triggerAIMove(gameId, game) {
+    // Ensure game object is valid and has lastActivityTime before proceeding
+    if (!game || !activeGames[gameId]) { // Check if game still exists in activeGames
+        console.log(`[triggerAIMove ${gameId}] Game not found in activeGames. AI will not move.`);
+        return;
+    }
+    if (game.status !== 'active') {
+        console.log(`[triggerAIMove ${gameId}] Game not active. AI will not move.`);
+        return;
+    }
+    // Update activity time when AI is triggered to make a move
+    game.lastActivityTime = Date.now();
+
+    if (!game || game.status !== 'active') { // Re-check status after potential time passing
+        console.log(`[triggerAIMove ${gameId}] Game became not active or not found before AI move execution. AI will not move.`);
+        return;
+    }
+
+    let earthquakeJustOccurredInAITurn = false;
+    if (game.earthquakeModeEnabled) {
+        // Check if the first earthquake can be triggered
+        if (game.earthquakesOccurredThisRound === 0 && !game.firstEarthquakeTriggered) {
+            if (ludoGameLogic.checkAndTriggerFirstEarthquake(game)) { // This function sets game.earthquakeJustHappened
+                earthquakeJustOccurredInAITurn = true;
+            }
+        }
+        // Potential check for second earthquake (less common at turn start for AI)
+        // else if (game.earthquakesOccurredThisRound === 1 && !game.secondEarthquakeTriggered) {
+        //    if (ludoGameLogic.checkAndTriggerSecondEarthquake(game)) {
+        //        earthquakeJustOccurredInAITurn = true;
+        //    }
+        // }
+    }
+
+    // This helper emits 'earthquakeActivated' if game.earthquakeJustHappened was set true by the above calls,
+    // and then it resets game.earthquakeJustHappened.
+    // The 'earthquakeJustOccurredInAITurn' variable holds whether it happened *this specific time* for makeAIMove.
+    if (checkAndEmitEarthquake(gameId, game, io)) {
+         io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
+         // If an earthquake was emitted, it means earthquakeJustOccurredInAITurn would have been true if triggered by the checks above.
+         // The flag game.earthquakeJustHappened is reset by checkAndEmitEarthquake.
+    }
+    // Note: The specific `ludoGameLogic.checkAndTriggerFirstEarthquake(game);` call that was here previously
+    // is now integrated into the logic above to set `earthquakeJustOccurredInAITurn`.
+
+    const aiPlayerColor = ludoGameLogic.getPlayerColor(game);
+    const aiPlayerSlot = game.playersSetup.find(p => p.color === aiPlayerColor);
+
+    if (!aiPlayerSlot || !aiPlayerSlot.isAI) {
+        console.log(`[triggerAIMove ${gameId}] Current player ${aiPlayerColor} is not AI. AI will not move.`);
+        return;
+    }
+
+    console.log(`[triggerAIMove ${gameId}] AI player ${aiPlayerColor}'s turn.`);
+
+    try {
+        const aiActionResult = ludoGameLogic.makeAIMove(game, earthquakeJustOccurredInAITurn); // Pass the flag
+
+        console.log(`[triggerAIMove ${gameId}] AI action result:`, JSON.stringify(aiActionResult, null, 2));
+
+        // Broadcast AI's dice roll
+        io.to(gameId).emit('diceRolled', {
+            playerColor: aiPlayerColor,
+            diceValue: aiActionResult.diceRoll,
+            consecutiveSixes: game.consecutive_sixes_count, // game object is updated by makeAIMove
+            mustRollAgain: aiActionResult.mustRollAgain,
+            awaitingMove: false // AI move is immediate
+        });
+
+        // If a pawn was moved
+        if (aiActionResult.movedPawnId !== undefined && aiActionResult.action !== "consecutive_3_sixes" && aiActionResult.action !== "failed_to_roll_6_in_3_tries" && aiActionResult.action !== "no_movable_pawns_not_6" && aiActionResult.action !== "no_valid_move_chosen_or_execution_failed") {
+            io.to(gameId).emit('pawnMoved', {
+                playerColor: aiPlayerColor,
+                pawnId: aiActionResult.movedPawnId,
+                diceValue: aiActionResult.diceRoll,
+                newPos: aiActionResult.newPosition,
+                newState: aiActionResult.newPawnState,
+                autoMoved: aiActionResult.autoMovedFromHome || false // Ensure it's defined
+            });
+        }
+
+        // Handle Round/Game Over (makeAIMove might set game.round_over)
+        if (game.round_over) {
+            const victoryCheck = ludoGameLogic.checkForGameVictory(game); // This updates game.status to 'gameOver' if needed
+
+            io.to(gameId).emit('roundOver', {
+                roundWinnerColor: game.round_winner,
+                roundWinnerName: game.playerNames[game.round_winner],
+                playerScores: game.playerScores,
+                overallWinnerFound: victoryCheck.overallWinnerFound,
+                overallGameWinnerColor: victoryCheck.winner,
+                overallGameWinnerName: victoryCheck.winner ? game.playerNames[victoryCheck.winner] : null
+            });
+
+            if (victoryCheck.overallWinnerFound) {
+                io.to(gameId).emit('overallGameOver', {
+                    winnerColor: game.overall_game_winner,
+                    winnerName: game.playerNames[game.overall_game_winner],
+                    finalScores: game.playerScores
+                });
+                const winnerName = game.playerNames[game.overall_game_winner];
+                if (winnerName) { // Update global scores if winner exists
+                    globalPlayerScores[winnerName] = (globalPlayerScores[winnerName] || 0) + 2; // Simplified scoring
+                    // Save updated leaderboard
+                    fs.writeFile(LEADERBOARD_FILE, JSON.stringify(globalPlayerScores, null, 2), (err) => {
+                        if (err) {
+                            console.error('Error saving leaderboard data:', err);
+                        } else {
+                            console.log('Leaderboard data saved successfully.');
+                        }
+                    });
+                }
+            } else { // Overall game is not over
+                // Since this is triggerAIMove, the roundWinner is definitely the current AI player.
+                const roundWinnerColor = game.round_winner;
+                console.log(`[${gameId}] AI player ${roundWinnerColor} won the round (from triggerAIMove). Automatically starting next round.`);
+                ludoGameLogic.startNextRound(game);
+                io.to(gameId).emit('nextRoundStarted', { message: 'Next round starting automatically.' });
+                io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
+
+                const newCurrentPlayerColor = ludoGameLogic.getPlayerColor(game);
+                const newCurrentPlayerIsAI = game.playersSetup.some(p => p.color === newCurrentPlayerColor && p.isAI);
+                if (newCurrentPlayerIsAI && game.status === 'active') {
+                    console.log(`[${gameId}] New current player ${newCurrentPlayerColor} is AI. Triggering AI move for new round.`);
+                    setTimeout(() => triggerAIMove(gameId, game), 1000);
+                }
+            }
+            // No need for io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) }); here as it's done inside branches
+            return; // End AI turn processing here if round/game is over
+        }
+
+        // Handle "Must Roll Again" for AI
+        if (aiActionResult.mustRollAgain && game.status === 'active' && !game.round_over && !game.overall_game_over) {
+            io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
+            console.log(`[triggerAIMove ${gameId}] AI ${aiPlayerColor} must roll again (e.g. rolled 6, or trying for 6 from home). Scheduling next AI move.`);
+            setTimeout(() => triggerAIMove(gameId, game), 1000);
+        }
+        // If the turn explicitly ends, or if it's not a "must roll again" situation (and game not over)
+        // This ensures the game progresses if the AI isn't entitled to another immediate action.
+        else if (aiActionResult.turnEnds || (!aiActionResult.mustRollAgain && game.status === 'active' && !game.round_over && !game.overall_game_over)) {
+            console.log(`[triggerAIMove ${gameId}] AI ${aiPlayerColor} turn ends. TurnEnds: ${aiActionResult.turnEnds}, MustRollAgain: ${aiActionResult.mustRollAgain}. Processing turn end.`);
+
+            // If a lastLogMessage (e.g., from AI capture) was generated by the AI's move,
+            // send it now before it's cleared by switchPlayer.
+            if (game.lastLogMessage) {
+                io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
+            }
+
+            ludoGameLogic.switchPlayer(game); // Clears lastLogMessage for the next player's state
+
+            // Handle potential earthquake after player switch.
+            checkAndEmitEarthquake(gameId, game, io);
+            // checkAndEmitEarthquake emits its own 'earthquakeActivated' and potentially a gameStateUpdate.
+
+            const newCurrentPlayerColor = ludoGameLogic.getPlayerColor(game);
+            io.to(gameId).emit('turnChanged', { currentPlayer: newCurrentPlayerColor });
+            // The gameStateUpdate here sends the state *after* switchPlayer (and potential earthquake updates)
+            io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
+
+            // ... existing AI check for next turn ...
+            const nextPlayerSlot = game.playersSetup.find(p => p.color === newCurrentPlayerColor);
+            if (nextPlayerSlot && nextPlayerSlot.isAI && game.status === 'active') {
+                 console.log(`[triggerAIMove ${gameId}] Next player ${newCurrentPlayerColor} is AI. Scheduling their move.`);
+                 setTimeout(() => triggerAIMove(gameId, game), 500);
+            }
+        }
+        // If game is over (round_over or overall_game_over), no player switching or further AI move triggering here.
+        // The 'gameStateUpdate' after round/game over handling is sufficient.
+        // If none of the above conditions, it might be a state where game ended AND mustRollAgain was true,
+        // in which case the return after game over handling prevents further action. Or simply an update is enough.
+        else if (game.status !== 'active' || game.round_over || game.overall_game_over) {
+             // Game ended, just ensure clients have the latest state.
+            io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
+        }
+
+
+    } catch (error) {
+        console.error(`[triggerAIMove ${gameId}] Error during AI move for ${aiPlayerColor}:`, error);
+        // Consider how to handle AI errors - maybe switch player or end turn?
+        // For now, just log and emit game state.
+        if (game.status === 'active') {
+            ludoGameLogic.switchPlayer(game); // Basic error handling: switch player
+            checkAndEmitEarthquake(gameId, game, io); // Check and emit earthquake
+            io.to(gameId).emit('turnChanged', { currentPlayer: ludoGameLogic.getPlayerColor(game) });
+        }
+        io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
+    }
+}
