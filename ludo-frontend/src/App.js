@@ -18,18 +18,26 @@ function App() {
     // Listen for game creation/joining success to transition views
     const handleGameCreated = (data) => {
       setGameId(data.gameId);
-      setMyPlayerColor(data.playerColor);
-      setMyPlayerName(data.playerName); // Set player name from server response
-      setInitialGameState(data.gameState); // Store initial state
+      // myPlayerColor and myPlayerName are set from data.playerColor / data.playerName
+      // For created games, enableEarthquakeMode is already set by handleCreateGame call.
+      // We could also get it from data.gameState.earthquakeModeEnabled if server includes it early.
+      setInitialGameState(data.gameState);
+      // if (data.gameState && typeof data.gameState.earthquakeModeEnabled !== 'undefined') {
+      //   setEnableEarthquakeMode(data.gameState.earthquakeModeEnabled);
+      // }
       setInGame(true);
       setLobbyError('');
     };
 
     const handleJoinedGame = (data) => {
       setGameId(data.gameId);
-      setMyPlayerColor(data.playerColor);
-      setMyPlayerName(data.playerName); // Set player name from server response
-      setInitialGameState(data.gameState); // Store initial state
+      setInitialGameState(data.gameState);
+      // For joined games, get earthquake mode from the initial game state
+      // if (data.gameState && typeof data.gameState.earthquakeModeEnabled !== 'undefined') {
+      //   setEnableEarthquakeMode(data.gameState.earthquakeModeEnabled);
+      // } else {
+      //   setEnableEarthquakeMode(false); // Default if not present
+      // }
       setInGame(true);
       setLobbyError('');
     };
@@ -54,7 +62,7 @@ function App() {
 
   const handleCreateGame = (gameSettings) => { // Updated signature
     if (socket.connected) {
-      socket.emit('createGame', gameSettings); // Send gameSettings object
+      socket.emit('createGame', gameSettings); // gameSettings from Lobby now only has playerName and enableAI
     } else {
       setLobbyError("Not connected to server. Please wait or check connection.");
     }
@@ -108,7 +116,7 @@ function App() {
         )}
       </main>
       <footer>
-        <p>Ludo Game Frontend by Gonisuki Nabosaka- &copy; 2025</p>
+        <p>Ludo Game Frontend by Gonisuki Nabosaka &copy; 2025</p>
       </footer>
     </div>
   );
