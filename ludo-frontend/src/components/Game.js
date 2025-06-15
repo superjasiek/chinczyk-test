@@ -18,6 +18,7 @@ const Game = ({ gameId: propGameId, myPlayerName, initialGameState, onReturnToLo
   const [targetVictories, setTargetVictories] = useState(initialGameState.targetVictories || 1);
   const [blackHoleMode, setBlackHoleMode] = useState(false);
   const [earthquakeModeSetting, setEarthquakeModeSetting] = useState(false); // State for the new toggle in Game.js
+  const [selectedGameTimeMode, setSelectedGameTimeMode] = useState('unlimited'); // Default value for game time mode
   
   const availableColors = ["Red", "Green", "Yellow", "Blue"];
 
@@ -40,6 +41,7 @@ const Game = ({ gameId: propGameId, myPlayerName, initialGameState, onReturnToLo
 
   const [showBlackHoleHitIndicator, setShowBlackHoleHitIndicator] = useState(false);
   const [blackHoleHitIndicatorMessage, setBlackHoleHitIndicatorMessage] = useState('');
+  const [livePlayerTimers, setLivePlayerTimers] = useState({}); // For live timer updates
 
   // Refs for state/props accessed in socket handlers
   const gameStateRef = useRef(gameState);
@@ -55,6 +57,23 @@ const Game = ({ gameId: propGameId, myPlayerName, initialGameState, onReturnToLo
   // myPlayerColor, assignedPlayerColor, myPlayerName are props or derived from props and stable or handled by their own refs if necessary
   useEffect(() => { myPlayerColorRef.current = myPlayerColor; }, [myPlayerColor]);
   useEffect(() => { myPlayerNameRef.current = myPlayerName; }, [myPlayerName]);
+
+// useEffect to initialize settings from initialGameState
+useEffect(() => {
+  if (initialGameState) {
+    console.log("[Game.js Settings Init] Initializing settings from initialGameState:", JSON.stringify(initialGameState, null, 2));
+    setNumPlayers(initialGameState.num_players_setting || initialGameState.num_players || 2);
+    setTargetVictories(initialGameState.targetVictories_setting || initialGameState.targetVictories || 1);
+    setBlackHoleMode(initialGameState.blackHoleModeEnabled || false);
+    setEarthquakeModeSetting(initialGameState.earthquakeModeEnabled || false);
+    setSelectedGameTimeMode(initialGameState.gameTimeMode_setting || initialGameState.gameTimeMode || 'unlimited');
+    // If initialGameState itself is the full, live gameState upon join/rejoin,
+    // then livePlayerTimers could potentially be initialized here too, though server usually sends updates.
+    if (initialGameState.playerTimers) {
+      setLivePlayerTimers(initialGameState.playerTimers);
+    }
+  }
+}, [initialGameState]);
 
 useEffect(() => {
   // Log entry points
@@ -457,13 +476,39 @@ useEffect(() => {
     };
 
     socket.on('earthquakeActivated', handleEarthquakeActivated);
+
+    const handleTimerTickUpdate = (data) => {
+      // data: { gameId, playerColor, remainingTime }
+      // Only update if it's for the current game
+      if (data.gameId === propGameId) {
+        setLivePlayerTimers(prevTimers => ({ ...prevTimers, [data.playerColor]: data.remainingTime }));
+      }
+    };
+    socket.on('timerTickUpdate', handleTimerTickUpdate);
+
+    const handlePlayerEliminated = (data) => {
+      // data: { gameId, playerColor, playerName, message }
+      // Server's gameStateUpdate will include the elimination status and any lastLogMessage.
+      // This client-side handler can log or provide an additional, perhaps more immediate, notification.
+      console.log(`[Game.js] Player Eliminated Event Received: ${data.playerName} (${data.playerColor}). Message: ${data.message}`);
+      // Example of adding a specific message if desired, though lastLogMessage from gameStateUpdate should cover it.
+      // addMessage(`${data.playerName || data.playerColor} has been eliminated by timeout.`, 'event', data.playerColor);
+    };
+    socket.on('playerEliminated', handlePlayerEliminated);
     
     // Keydown listener for spacebar to roll dice
     // This handler uses setGameState with a callback, which is fine.
     // It also accesses myPlayerColorRef, roundOverInfoRef, overallWinnerInfoRef.
     const handleKeyDown = (event) => {
-        if (event.target.tagName === 'INPUT') return;
-        if (event.code !== 'Space' && event.key !== ' ') return;
+        // If the event target is an input, textarea, or contenteditable, let it behave normally.
+        if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA' || event.target.isContentEditable) {
+            return;
+        }
+
+        // For space bar presses specifically, prevent default scrolling action.
+        if (event.code === 'Space' || event.key === ' ') {
+            event.preventDefault();
+        }
         
         // Access refs inside this handler
         const currentMyPlayerColor = myPlayerColorRef.current;
@@ -479,17 +524,32 @@ useEffect(() => {
             } else { return currentGs; }
 
             const isMyTurnForSpace = currentMyPlayerColor === actualCurrentPlayerForSpace;
-            const diceDisabledForSpace = !isMyTurnForSpace || currentGs.awaitingMove || (currentGs.dice_roll !== null && !currentGs.mustRollAgain);
-            const canRollForSpace = isMyTurnForSpace && !currentGs.awaitingMove && !diceDisabledForSpace && !currentRoundOverInfo && !currentOverallWinnerInfo;
+            // Ensure diceDisabledForSpace calculation is correct based on currentGs
+            // const diceDisabledForSpace = !isMyTurnForSpace ||
+            //                              currentGs.awaitingMove ||
+            //                              (currentGs.dice_roll !== null && !currentGs.mustRollAgain) ||
+            //                              !!currentRoundOverInfo || // Use ref values
+            //                              !!currentOverallWinnerInfo; // Use ref values
             
-            if (canRollForSpace) {
-                event.preventDefault();
-                // handleRollDice is stable and uses refs itself
+            // const canRollForSpace = isMyTurnForSpace && !currentGs.awaitingMove && !diceDisabledForSpace;
+            // Note: The original canRollForSpace also included !currentRoundOverInfo && !currentOverallWinnerInfo.
+            // The diceDisabledForSpace now incorporates these via the refs.
+            // Let's refine canRollForSpace to be absolutely clear based on all conditions:
+            const finalCanRollForSpace = isMyTurnForSpace &&
+                                         !currentGs.awaitingMove &&
+                                         !(currentGs.dice_roll !== null && !currentGs.mustRollAgain) &&
+                                         !currentRoundOverInfo &&
+                                         !currentOverallWinnerInfo;
+
+
+            if (finalCanRollForSpace) {
+                // event.preventDefault(); // Already called earlier for any space press not in an input
                 handleRollDice(); 
             }
             return currentGs; // Return unchanged state if no roll
         });
-    };
+    } // This closing brace was missing for the "if (event.code === 'Space' || event.key === ' ')" check
+};
     window.addEventListener('keydown', handleKeyDown);
 
     return () => {
@@ -514,6 +574,8 @@ useEffect(() => {
       socket.off('blackHoleActivated', handleBlackHoleActivated);
       socket.off('playerHitBlackHole', handlePlayerHitBlackHole);
       socket.off('earthquakeActivated', handleEarthquakeActivated);
+      socket.off('timerTickUpdate', handleTimerTickUpdate);
+      socket.off('playerEliminated', handlePlayerEliminated);
       window.removeEventListener('keydown', handleKeyDown);
     };
   // Minimal dependencies: only things that, if they change, *must* cause listeners to re-register.
@@ -648,7 +710,8 @@ const handleStartGame = () => {
       numPlayers, 
       targetVictories, 
       blackHoleMode, 
-      earthquakeMode: earthquakeModeSetting // Add the new state here
+      earthquakeMode: earthquakeModeSetting, // Add the new state here
+      gameTimeMode: selectedGameTimeMode // Log gameTimeMode
   });
   socket.emit('creatorRequestsGameStart', {
     gameId: propGameId,
@@ -656,7 +719,8 @@ const handleStartGame = () => {
         numPlayers, 
         targetVictories, 
         blackHoleMode, 
-        earthquakeMode: earthquakeModeSetting // Use the new local state
+        earthquakeMode: earthquakeModeSetting, // Use the new local state
+        gameTimeMode: selectedGameTimeMode // Add gameTimeMode to emitted settings
     }
   });
   // Button will be disabled via awaitingReadinessConfirm after server responds
@@ -804,6 +868,7 @@ const handleStartGame = () => {
                   else if (!isMyTurn && !roundOverInfo && !overallWinnerInfo) { addMessage("Not your turn to move."); }
                   else if (roundOverInfo || overallWinnerInfo) { addMessage("The round/game is over."); }
                 }}
+                eliminatedPlayers={gameState.eliminatedPlayers || []} // Pass down the list
           />
         </div>
         <div className="game-info-controls-area">
@@ -834,6 +899,19 @@ const handleStartGame = () => {
                   <option value="1">1</option>
                   <option value="2">2</option>
                   <option value="3">3</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label htmlFor="gameTimeModeSetup">Czas Gry:</label>
+                <select
+                  id="gameTimeModeSetup"
+                  value={selectedGameTimeMode}
+                  onChange={(e) => setSelectedGameTimeMode(e.target.value)}
+                  disabled={!currentIsSetupPhase || awaitingReadinessConfirm}
+                >
+                  <option value="unlimited">Bez limitu</option>
+                  <option value="4min">4 Minuty</option>
+                  <option value="6min">6 Minut</option>
                 </select>
               </div>
               <div className="form-group">
@@ -1022,6 +1100,12 @@ const handleStartGame = () => {
                             finishedCount={gameState.board && gameState.board.players && gameState.board.players[color]?.finished_count != null ? gameState.board.players[color].finished_count : 0}
                             isCurrentPlayer={color === currentPlayerColor}
                             isSetupPhase={false}
+                            // Timer related props
+                            playerTimer={livePlayerTimers[color] !== undefined ? livePlayerTimers[color] : (gameState.playerTimers ? gameState.playerTimers[color] : null)}
+                            isEliminated={gameState.eliminatedPlayers ? gameState.eliminatedPlayers.includes(color) : false}
+                            initialTimePerPlayer={gameState.initialTimePerPlayer || null}
+                            gameTimeMode={gameState.gameTimeMode || 'unlimited'}
+                            playerTurnStartTime={gameState.playerTurnStartTime || null} // Pass turn start time for live countdown in PlayerArea
                           />
                   );
               }

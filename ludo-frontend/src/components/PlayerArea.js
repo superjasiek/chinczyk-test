@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 
 const PlayerArea = ({ 
   playerColor, 
@@ -13,10 +13,18 @@ const PlayerArea = ({
   availableColors,
   takenColors,
   onSelectColor,
-  isReady // New prop for readiness status
+  isReady, // New prop for readiness status
+  // Timer related props
+  playerTimer,
+  isEliminated,
+  initialTimePerPlayer,
+  gameTimeMode,
+  playerTurnStartTime
 }) => {
   let borderColor = playerColor || 'grey';
-  if (isSetupPhase && isReady) {
+  if (isEliminated) {
+    borderColor = '#757575'; // Dark grey for eliminated
+  } else if (isSetupPhase && isReady) {
     borderColor = 'lightgreen';
   } else if (!isSetupPhase && isCurrentPlayer) {
     borderColor = 'gold';
@@ -27,7 +35,8 @@ const PlayerArea = ({
     padding: '10px',
     margin: '10px',
     borderRadius: '5px',
-    backgroundColor: '#f9f9f9', // Unified background
+    backgroundColor: isEliminated ? '#e0e0e0' : '#f9f9f9', // Unified background, greyish if eliminated
+    opacity: isEliminated ? 0.6 : 1,
     minWidth: '150px',
     minHeight: '110px', // Added minHeight
   };
@@ -36,12 +45,70 @@ const PlayerArea = ({
     color: playerColor || (isSetupPhase && !playerName ? 'grey' : 'black'), // Unified title color logic
     fontWeight: 'bold',
     marginBottom: '5px',
+    textDecoration: isEliminated ? 'line-through' : 'none',
   };
+
+  const formatTime = (totalSeconds) => {
+    if (totalSeconds === null || totalSeconds === undefined || totalSeconds < 0) {
+      return '--:--';
+    }
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  };
+
+  const [displayedTime, setDisplayedTime] = useState(playerTimer);
+
+  useEffect(() => {
+    setDisplayedTime(playerTimer); // Always sync with the live prop first
+
+    let timerInterval = null;
+    if (isCurrentPlayer && !isEliminated && gameTimeMode !== 'unlimited' && typeof playerTimer === 'number' && playerTimer > 0) {
+      // If this is the current player, and they are active and game is timed,
+      // start a local interval to decrement the display smoothly.
+      // The 'playerTimer' prop acts as a sync point from the server.
+      timerInterval = setInterval(() => {
+        // Decrement based on its own previous state, not playerTimer prop directly inside interval
+        setDisplayedTime(prevTime => {
+          if (prevTime === null || prevTime <= 0) { // Check for null as well
+            clearInterval(timerInterval); // Clear interval if time runs out
+            return 0;
+          }
+          return prevTime - 1;
+        });
+      }, 1000);
+    } else if (gameTimeMode === 'unlimited' || playerTimer === null) {
+        setDisplayedTime(null); // Ensure displayedTime is null for unlimited or if playerTimer is null
+    }
+
+
+    return () => {
+      if (timerInterval) {
+        clearInterval(timerInterval);
+      }
+    };
+    // Re-sync and restart interval if the authoritative playerTimer (from server) changes,
+    // or if the player's status (isCurrentPlayer, isEliminated) changes.
+  }, [playerTimer, isCurrentPlayer, isEliminated, gameTimeMode]);
+
 
   return (
     <div style={areaStyle}>
       <h3 style={titleStyle}>{playerName || playerColor || (isSetupPhase ? 'Wolne Miejsce...' : 'Player')}</h3>
       
+      {/* Timer and Elimination Display - Not shown during setup phase's color picking */}
+      {!isSetupPhase && (
+        <>
+          {isEliminated ? (
+            <p style={{ color: 'red', fontWeight: 'bold', marginTop: '5px' }}>Wyeliminowany</p>
+          ) : gameTimeMode === 'unlimited' || displayedTime === null ? (
+            <p style={{ marginTop: '5px' }}>Czas: Bez limitu</p>
+          ) : (
+            <p style={{ marginTop: '5px' }}>Pozostały czas: {formatTime(displayedTime)}</p>
+          )}
+        </>
+      )}
+
       {isSetupPhase && isSelf && !playerColor && availableColors && (
         <div className="color-picker-container" style={{ marginTop: '10px' }}>
           <p style={{ fontSize: '0.9em', marginBottom: '5px' }}>Wybierz kolor:</p>
@@ -89,7 +156,8 @@ const PlayerArea = ({
           <p>Pionki na Mecie: {finishedCount}</p>
         </>
       )}
-       {isSetupPhase && !playerColor && !isSelf && playerName && (
+      {/* Message for player waiting for color selection - only if not eliminated and in setup */}
+      {isSetupPhase && !playerColor && !isSelf && playerName && !isEliminated && (
         <p style={{ fontStyle: 'italic', fontSize: '0.9em' }}>Czeka na wybór koloru...</p>
       )}
     </div>

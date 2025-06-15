@@ -1,5 +1,6 @@
 
 import React, { useState } from "react"; // Import useState
+import Pawn from './Pawn'; // Import the Pawn component
 import "./Board.css"; 
 
 const boardSize = 15;
@@ -181,7 +182,7 @@ function getPotentialDestinationCellId(pawn, diceRoll, pawnColor, gameState, con
 }
 
 
-export default function Board({ gameState, myPlayerColor, movablePawnIds, onPawnClick }) {
+export default function Board({ gameState, myPlayerColor, movablePawnIds, onPawnClick, eliminatedPlayers = [] }) { // Added eliminatedPlayers prop with default
   const [hoverHighlightedCellId, setHoverHighlightedCellId] = useState(null); // Added state for hover highlight
 
   // Destructure blackHoleModeEnabled and blackHolePosition from gameState
@@ -297,33 +298,40 @@ export default function Board({ gameState, myPlayerColor, movablePawnIds, onPawn
                                 gameState.players[gameState.current_player_index] === myPlayerColor &&
                                 pawn.color === myPlayerColor &&
                                 movablePawnIds.includes(pawn.id);
+
+              const isOwnerEliminated = eliminatedPlayers.includes(pawn.color);
+
               if (cellId === "0y0") {
-                   console.log(`[Board.js] Attempting to render pawn in "0y0":`, pawn, `IsMovable: ${isMovable}`);
+                   console.log(`[Board.js] Attempting to render pawn in "0y0":`, pawn, `IsMovable: ${isMovable}`, `IsOwnerEliminated: ${isOwnerEliminated}`);
               }
-              return (
-                  <div
-                      key={pawn.id}
-                      className={`pawn ${pawn.color.toLowerCase()} ${isMovable ? 'movable' : ''}`}
-                      onClick={() => {
-                          if (isMovable && onPawnClick) {
-                              onPawnClick(pawn.id);
-                          }
-                      }}
-                      onMouseEnter={() => {
-                        if (isMovable && gameState && typeof gameState.dice_roll !== 'undefined' && gameState.dice_roll !== null) {
-                          const destinationCellId = getPotentialDestinationCellId(pawn, gameState.dice_roll, pawn.color, gameState, pathConstants);
-                          setHoverHighlightedCellId(destinationCellId);
-                        }
-                      }}
-                      onMouseLeave={() => {
-                        setHoverHighlightedCellId(null);
-                      }}
-                      title={`Pawn ${pawn.id} (${pawn.color})
+
+              const titleText = `Pawn ${pawn.id} (${pawn.color})${isOwnerEliminated ? ' - ELIMINATED' : ''}
 State: ${pawn.state}
-Pos: ${pawn.position}
-Stretch Pos: ${pawn.home_stretch_position}`}
-                  >
-                  </div>
+Pos: ${pawn.position}${pawn.home_stretch_position !== undefined ? `\nStretch Pos: ${pawn.home_stretch_position}` : ''}`;
+
+              return (
+                <Pawn
+                  key={pawn.id}
+                  playerColor={pawn.color}
+                  id={pawn.id}
+                  isMovable={isMovable}
+                  onClick={() => {
+                    // The Pawn component's internal onClick now handles the isMovable and !isOwnerEliminated check
+                    onPawnClick(pawn.id);
+                  }}
+                  isOwnerEliminated={isOwnerEliminated}
+                  onMouseEnter={() => {
+                    // Logic for hover highlight remains in Board.js as it affects cellStyle
+                    if (isMovable && gameState && typeof gameState.dice_roll !== 'undefined' && gameState.dice_roll !== null && !isOwnerEliminated) {
+                      const destinationCellId = getPotentialDestinationCellId(pawn, gameState.dice_roll, pawn.color, gameState, pathConstants);
+                      setHoverHighlightedCellId(destinationCellId);
+                    }
+                  }}
+                  onMouseLeave={() => {
+                    setHoverHighlightedCellId(null);
+                  }}
+                  titleText={titleText}
+                />
               );
           });
       } else {

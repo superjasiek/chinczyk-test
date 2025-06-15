@@ -118,6 +118,7 @@ function createLudoGameInstance(gameId, creatorPlayerName, creatorPlayerId, opti
         playersSetup: playersSetup,
         num_players_setting: null, // Target number of players, set by creator
         targetVictories_setting: null, // Set by creator
+        gameTimeMode_setting: null, // Will be set by creator via setGameParameters
 
         // Game-play related properties, initialized in startGameActual
         board: null,
@@ -163,6 +164,13 @@ function createLudoGameInstance(gameId, creatorPlayerName, creatorPlayerId, opti
         playerHitTimestamps: {}, // Added this line
         playerConsecutiveNonSixRolls: {},
         lastActivityTime: Date.now(),
+
+        // Timer related properties
+        gameTimeMode: null, // e.g., '4min', '6min', 'unlimited'
+        playerTimers: {}, // e.g., { "Red": 240, "Green": 240 }
+        playerTurnStartTime: null, // timestamp, e.g., Date.now()
+        eliminatedPlayers: [], // e.g., ["Red"]
+        initialTimePerPlayer: null, // e.g., 240 or 360
     };
 
     return gameInstance;
@@ -268,12 +276,54 @@ function switchPlayer(game) {
     game.lastLogMessageColor = null;
     if (game.status !== 'active') return;
 
+    // --- Timer Logic: Update previous player's timer ---
+    if (game.gameTimeMode && game.gameTimeMode !== 'unlimited' && game.playerTurnStartTime !== null && game.activePlayerColors && game.activePlayerColors.length > 0) {
+        const now = Date.now();
+        const previousPlayerIndex = game.current_player_index % game.activePlayerColors.length; // current_player_index is still for the player whose turn just ended
+        const previousPlayerColor = game.activePlayerColors[previousPlayerIndex];
+        const previousPlayerIsAI = game.playersSetup.find(p => p.color === previousPlayerColor)?.isAI;
+
+        if (previousPlayerColor && !game.eliminatedPlayers.includes(previousPlayerColor) && !previousPlayerIsAI) {
+            const elapsedSeconds = Math.floor((now - game.playerTurnStartTime) / 1000);
+            if (game.playerTimers[previousPlayerColor] !== null) {
+                game.playerTimers[previousPlayerColor] -= elapsedSeconds;
+                // Basic elimination check (server might do more complex checks)
+                if (game.playerTimers[previousPlayerColor] <= 0) {
+                    game.playerTimers[previousPlayerColor] = 0; // Ensure timer doesn't go negative
+                    if (!game.eliminatedPlayers.includes(previousPlayerColor)) {
+                        game.eliminatedPlayers.push(previousPlayerColor);
+                        console.log(`Player ${previousPlayerColor} eliminated due to timer.`);
+                        // Further logic for handling elimination (e.g., skipping turns) will be managed by server / turn progression logic.
+                    }
+                }
+            }
+        }
+    }
+    // --- End Timer Logic for previous player ---
+
     // Earthquake mode check (Removed old logic)
     // New earthquake logic will be called elsewhere or handled differently
 
     game.consecutive_sixes_count = 0;
     if (game.activePlayerColors && game.activePlayerColors.length > 0) {
         game.current_player_index = (game.current_player_index + 1) % game.activePlayerColors.length;
+
+        // Skip eliminated players
+        let attempts = 0; // To prevent infinite loop if all players eliminated
+        while (game.eliminatedPlayers.includes(game.activePlayerColors[game.current_player_index % game.activePlayerColors.length]) && attempts < game.activePlayerColors.length) {
+            game.current_player_index = (game.current_player_index + 1) % game.activePlayerColors.length;
+            attempts++;
+        }
+
+        // Check if all players are eliminated (e.g. if only one non-eliminated player remains, they are the winner)
+        // This basic check might be expanded in server.js
+        const activeNonEliminatedPlayers = game.activePlayerColors.filter(pColor => !game.eliminatedPlayers.includes(pColor));
+        if (activeNonEliminatedPlayers.length <= 1 && game.activePlayerColors.length > 1) { // If 1 or 0 players left, and there was more than 1 to start
+             // Game might end or round might end. Server should handle this state.
+             // For now, just log. A more robust solution might set a game state.
+             console.log("All or all but one player eliminated by timer. Game may need to end.");
+        }
+
     } else {
         console.error("[ludoGame.js switchPlayer] Error: Cannot switch player, activePlayerColors is empty or undefined.");
     }
@@ -281,6 +331,21 @@ function switchPlayer(game) {
     game.threeTryAttempts = 0;
     game.mustRollAgain = false;
     game.awaitingMove = false;
+
+    // --- Timer Logic: Set start time for new current player ---
+    if (game.gameTimeMode && game.gameTimeMode !== 'unlimited' && game.activePlayerColors && game.activePlayerColors.length > 0) {
+        const currentPlayerColor = game.activePlayerColors[game.current_player_index % game.activePlayerColors.length];
+        const currentPlayerIsAI = game.playersSetup.find(p => p.color === currentPlayerColor)?.isAI;
+
+        if (currentPlayerColor && !game.eliminatedPlayers.includes(currentPlayerColor) && !currentPlayerIsAI) {
+            game.playerTurnStartTime = Date.now();
+        } else {
+            game.playerTurnStartTime = null; // AI, eliminated, or unlimited time
+        }
+    } else {
+        game.playerTurnStartTime = null; // Unlimited time or game not started properly
+    }
+    // --- End Timer Logic for new player ---
 }
 
 function movePawn(game, pawnOwnerColor, pawnId, diceValue) {
@@ -626,7 +691,7 @@ function checkForGameVictory(game) {
 
 // --- Setup Phase Specific Functions ---
 
-function setGameParameters(game, numPlayers, targetVictories, playerId) {
+function setGameParameters(game, numPlayers, targetVictories, gameTimeMode, playerId) {
     game.lastActivityTime = Date.now();
     if (playerId !== game.creatorPlayerId) {
         return { success: false, error: "Only the game creator can set parameters." };
@@ -639,6 +704,11 @@ function setGameParameters(game, numPlayers, targetVictories, playerId) {
     }
     if (targetVictories < 1 || targetVictories > 5) { // Example range for victories
         return { success: false, error: "Target victories must be between 1 and 5." };
+    }
+
+    const validTimeModes = ['4min', '6min', 'unlimited', null]; // null might be default before selection
+    if (!validTimeModes.includes(gameTimeMode)) {
+        return { success: false, error: "Invalid game time mode selected." };
     }
 
     const newNumPlayersInt = parseInt(numPlayers, 10);
@@ -669,6 +739,7 @@ function setGameParameters(game, numPlayers, targetVictories, playerId) {
     // After successfully adjusting size (or if size is the same), apply settings:
     game.num_players_setting = newNumPlayersInt;
     game.targetVictories_setting = parseInt(targetVictories, 10);
+    game.gameTimeMode_setting = gameTimeMode;
     
     // Ensure creator is always in slot 0 if num_players_setting >= 1
     // This check is more of a safeguard for logical consistency.
@@ -940,6 +1011,40 @@ function startGameActual(game) {
     game.mustRollAgain = false;
     game.awaitingMove = false;
     game.readyPlayers.clear(); // Clear readiness set as game starts
+
+    // --- Initialize Timer related properties ---
+    game.gameTimeMode = game.gameTimeMode_setting;
+    game.playerTimers = {};
+    game.eliminatedPlayers = [];
+    game.initialTimePerPlayer = null;
+
+    if (game.gameTimeMode === '4min') {
+        game.initialTimePerPlayer = 240;
+    } else if (game.gameTimeMode === '6min') {
+        game.initialTimePerPlayer = 360;
+    }
+
+    game.activePlayerColors.forEach(color => {
+        if (game.gameTimeMode === '4min') {
+            game.playerTimers[color] = 240;
+        } else if (game.gameTimeMode === '6min') {
+            game.playerTimers[color] = 360;
+        } else { // unlimited or null
+            game.playerTimers[color] = null;
+        }
+    });
+
+    // Set playerTurnStartTime for the first player if the game is timed
+    // And if the first player is not AI and not eliminated (though eliminated should be empty here)
+    const firstPlayerColor = game.activePlayerColors[game.current_player_index % game.activePlayerColors.length];
+    const firstPlayerIsAI = game.playersSetup.find(p => p.color === firstPlayerColor)?.isAI;
+
+    if (game.gameTimeMode !== 'unlimited' && firstPlayerColor && !firstPlayerIsAI) {
+        game.playerTurnStartTime = Date.now();
+    } else {
+        game.playerTurnStartTime = null;
+    }
+    // --- End Timer Initialization ---
 
     if (game.blackHoleModeEnabled) {
         game.blackHoleActivationPawnCountTarget = Math.floor(Math.random() * 3) + 1; // Randomly 1, 2, or 3
@@ -1672,6 +1777,12 @@ function getGameState(game) {
         if (game.earthquakeJustHappened) { // Stays the same
             baseState.earthquakeJustHappened = true;
         }
+
+        // Add timer related properties
+        baseState.gameTimeMode = game.gameTimeMode;
+        baseState.playerTimers = game.playerTimers;
+        baseState.eliminatedPlayers = game.eliminatedPlayers;
+        baseState.initialTimePerPlayer = game.initialTimePerPlayer;
     }
     return baseState;
 }
