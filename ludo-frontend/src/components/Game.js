@@ -495,7 +495,7 @@ useEffect(() => {
       // addMessage(`${data.playerName || data.playerColor} has been eliminated by timeout.`, 'event', data.playerColor);
     };
     socket.on('playerEliminated', handlePlayerEliminated);
-    
+
     // Keydown listener for spacebar to roll dice
     // This handler uses setGameState with a callback, which is fine.
     // It also accesses myPlayerColorRef, roundOverInfoRef, overallWinnerInfoRef.
@@ -548,8 +548,7 @@ useEffect(() => {
             }
             return currentGs; // Return unchanged state if no roll
         });
-    } // This closing brace was missing for the "if (event.code === 'Space' || event.key === ' ')" check
-};
+    } // Corrected closing brace for the handleKeyDown function
     window.addEventListener('keydown', handleKeyDown);
 
     return () => {
