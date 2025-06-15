@@ -93,6 +93,7 @@
   color: white;
   text-shadow: 0 0 2px black, 0 0 2px black;
   position: absolute;
+  background-color: #7f8c8d; /* Default grey if no other color applies */
 }
 
 /* Stacking for multiple pawns in one cell */
@@ -101,17 +102,24 @@
 .cell .pawn:nth-child(3) { transform: translate(-3px, -3px); z-index: 3; }
 .cell .pawn:nth-child(4) { transform: translate(6px, -3px); z-index: 4; }
 
-.pawn.red { background-color: #e74c3c; border-color: #c0392b; }
-.pawn.green { background-color: #2ecc71; border-color: #27ae60; }
-.pawn.yellow { background-color: #f1c40f; border-color: #f39c12; }
-.pawn.blue { background-color: #3498db; border-color: #2980b9; }
+.pawn-red { background-color: #e74c3c !important; border-color: #c0392b !important; }
+.pawn-green { background-color: #2ecc71 !important; border-color: #27ae60 !important; }
+.pawn-yellow { background-color: #f1c40f !important; border-color: #f39c12 !important; }
+.pawn-blue { background-color: #3498db !important; border-color: #2980b9 !important; }
+.pawn-grey { background-color: #bdc3c7 !important; border-color: #95a5a6 !important; } /* For the default case from Pawn.js */
 
 .pawn.movable {
-  border-color: gold;
+  border-color: gold !important; /* Ensure high specificity for movable highlight */
   box-shadow: 0 0 10px gold, 0 0 5px yellow; 
   cursor: pointer;
   animation: pulseMovable 1.2s infinite ease-in-out;
   z-index: 10; /* Ensure movable pawns are on top */
+}
+
+/* The pawn-eliminated class can be used for additional styling if needed, beyond opacity from Pawn.js */
+.pawn-eliminated {
+  /* Example: slightly different border or a filter if desired, though opacity is primary */
+  /* border-style: dashed; */
 }
 
 @keyframes pulseMovable {

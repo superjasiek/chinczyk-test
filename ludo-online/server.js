@@ -41,6 +41,7 @@ const READINESS_TIMEOUT_SECONDS = 10; // Readiness check timeout
 
 let activeGames = {}; // Stores game instances, keyed by gameId
 let nextGameId = 1;
+const activeGameIntervals = {}; // For storing game tick intervals
 
 // app.use(express.json()); 
 app.use(express.json()); // Enable JSON parsing for Express - ensure it's after cors if any specific cors config needed before it
@@ -426,6 +427,12 @@ io.on('connection', (socket) => {
                     winnerName: game.playerNames[game.overall_game_winner],
                     finalScores: game.playerScores 
                 });
+                // Clear interval on overall game over
+                if (activeGameIntervals[gameId]) {
+                    clearInterval(activeGameIntervals[gameId]);
+                    delete activeGameIntervals[gameId];
+                    console.log(`[Game Timer] Cleared interval for game ${gameId} due to overall game over (player move).`);
+                }
                 const winnerName = game.playerNames[game.overall_game_winner];
                 if (winnerName) {
                     globalPlayerScores[winnerName] = (globalPlayerScores[winnerName] || 0) + 2; // Simplified scoring
@@ -595,10 +602,11 @@ io.on('connection', (socket) => {
 
     if (settings) {
         console.log(`[creatorRequestsGameStart ${gameId}] Received settings object:`, JSON.stringify(settings, null, 2));
-        const { numPlayers, targetVictories, blackHoleMode, earthquakeMode } = settings; // Destructure earthquakeMode
+        const { numPlayers, targetVictories, blackHoleMode, earthquakeMode, gameTimeMode } = settings; // Destructure gameTimeMode
 
         if (numPlayers && targetVictories) {
-            const setResult = ludoGameLogic.setGameParameters(game, numPlayers, targetVictories, socket.id);
+            // Ensure gameTimeMode is passed to setGameParameters
+            const setResult = ludoGameLogic.setGameParameters(game, numPlayers, targetVictories, gameTimeMode, socket.id);
             if (!setResult.success) {
                 socket.emit('actionError', { message: setResult.error || 'Invalid game settings provided.' });
                 return;
@@ -661,6 +669,13 @@ io.on('connection', (socket) => {
             io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) }); // Game is now 'active'
             // Check if first player is AI and trigger their move
             if (game.status === 'active') {
+                // Start game tick interval if timed game
+                if (game.gameTimeMode && game.gameTimeMode !== 'unlimited') {
+                    if (activeGameIntervals[gameId]) clearInterval(activeGameIntervals[gameId]);
+                    activeGameIntervals[gameId] = setInterval(() => { handleGameTick(gameId, io); }, 1000);
+                    console.log(`[Game Timer] Interval started for game ${gameId} with mode ${game.gameTimeMode}`);
+                }
+
                 const firstPlayerColor = ludoGameLogic.getPlayerColor(game);
                 const firstPlayerSlot = game.playersSetup.find(p => p.color === firstPlayerColor);
                 if (firstPlayerSlot && firstPlayerSlot.isAI) {
@@ -720,6 +735,13 @@ io.on('connection', (socket) => {
             io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) }); // Game is now 'active'
             // Check if first player is AI
             if (game.status === 'active') {
+                // Start game tick interval if timed game
+                if (game.gameTimeMode && game.gameTimeMode !== 'unlimited') {
+                    if (activeGameIntervals[gameId]) clearInterval(activeGameIntervals[gameId]);
+                    activeGameIntervals[gameId] = setInterval(() => { handleGameTick(gameId, io); }, 1000);
+                    console.log(`[Game Timer] Interval started for game ${gameId} with mode ${game.gameTimeMode}`);
+                }
+
                 const firstPlayerColor = ludoGameLogic.getPlayerColor(game);
                 const firstPlayerSlot = game.playersSetup.find(p => p.color === firstPlayerColor);
                 if (firstPlayerSlot && firstPlayerSlot.isAI) {
@@ -817,11 +839,21 @@ io.on('connection', (socket) => {
             if (hasAI && activeHumanPlayerCount === 0) {
                 console.log(`Game ${gameId} vs AI: Human player disconnected. Ending game.`);
                 io.to(gameId).emit('gameEndedNotification', { message: "Human player disconnected. Game ended." });
+                if (activeGameIntervals[gameId]) {
+                    clearInterval(activeGameIntervals[gameId]);
+                    delete activeGameIntervals[gameId];
+                    console.log(`[Game Timer] Cleared interval for game ${gameId} due to disconnect leading to game end.`);
+                }
                 delete activeGames[gameId]; // Remove the game
                 return;
             } else if (activeHumanPlayerCount + (hasAI ? 1 : 0) < 2 && !hasAI) { // For human-only games, or if AI logic implies it can't continue
                  console.log(`Game ${gameId} has less than 2 active players, ending game.`);
                  io.to(gameId).emit('gameEndedNotification', { message: "Game ended due to insufficient players."});
+                 if (activeGameIntervals[gameId]) {
+                    clearInterval(activeGameIntervals[gameId]);
+                    delete activeGameIntervals[gameId];
+                    console.log(`[Game Timer] Cleared interval for game ${gameId} due to disconnect leading to game end.`);
+                }
                  delete activeGames[gameId];
                  return;
             }
@@ -830,6 +862,11 @@ io.on('connection', (socket) => {
         const remainingPlayers = game.playersSetup.filter(p => p.playerId !== null).length;
         if (remainingPlayers === 0 && game.status !== 'active' && game.status !== 'gameOver') { // Don't delete active/finished games this way
             console.log(`Game ${gameId} is empty, deleting.`);
+            if (activeGameIntervals[gameId]) { // Also clear interval if game becomes empty during setup/waiting
+                clearInterval(activeGameIntervals[gameId]);
+                delete activeGameIntervals[gameId];
+                console.log(`[Game Timer] Cleared interval for game ${gameId} as it became empty.`);
+            }
             delete activeGames[gameId];
         } else {
             io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) }); 
@@ -870,6 +907,101 @@ io.on('connection', (socket) => {
   });
 });
 
+// --- Game Tick Handler ---
+/**
+ * Handles the game tick for timer updates.
+ * @param {string} gameId The ID of the game.
+ * @param {object} io The Socket.IO server instance.
+ */
+function handleGameTick(gameId, io) {
+    const game = activeGames[gameId];
+
+    if (!game || game.status !== 'active' || !game.gameTimeMode || game.gameTimeMode === 'unlimited' || game.overall_game_over || game.round_over) {
+        if (activeGameIntervals[gameId]) {
+            clearInterval(activeGameIntervals[gameId]);
+            delete activeGameIntervals[gameId];
+            console.log(`[Game Timer] Cleared interval for game ${gameId} due to status change or game end.`);
+        }
+        return;
+    }
+
+    const currentPlayerColor = ludoGameLogic.getPlayerColor(game);
+
+    if (!currentPlayerColor || !game.playerTurnStartTime) {
+        return;
+    }
+
+    const playerSetup = game.playersSetup.find(p => p.color === currentPlayerColor);
+    const currentPlayerIsAI = playerSetup ? playerSetup.isAI : false;
+
+    if (currentPlayerIsAI || game.eliminatedPlayers.includes(currentPlayerColor)) {
+        return;
+    }
+
+    const elapsedSecondsThisTurnSegment = Math.floor((Date.now() - game.playerTurnStartTime) / 1000);
+    const projectedRemainingTime = game.playerTimers[currentPlayerColor] - elapsedSecondsThisTurnSegment;
+
+    const currentPlayerData = game.playersSetup.find(p => p.color === currentPlayerColor);
+    if (currentPlayerData && currentPlayerData.playerId) {
+        io.to(currentPlayerData.playerId).emit('timerTickUpdate', {
+            playerColor: currentPlayerColor,
+            remainingTime: projectedRemainingTime > 0 ? projectedRemainingTime : 0
+        });
+    }
+
+    if (projectedRemainingTime <= 0) {
+        if (!game.eliminatedPlayers.includes(currentPlayerColor)) {
+            console.log(`[Game Timer] Player ${currentPlayerColor} in game ${gameId} timed out. Projected time: ${projectedRemainingTime}`);
+
+            game.playerTimers[currentPlayerColor] = 0;
+            game.eliminatedPlayers.push(currentPlayerColor);
+            game.lastLogMessage = `${game.playerNames[currentPlayerColor]} (${currentPlayerColor}) timed out and is eliminated!`;
+            game.lastLogMessageColor = currentPlayerColor;
+
+            io.to(gameId).emit('playerEliminated', {
+                gameId,
+                playerColor: currentPlayerColor,
+                playerName: game.playerNames[currentPlayerColor],
+                message: game.lastLogMessage
+            });
+
+            ludoGameLogic.switchPlayer(game);
+
+            io.to(gameId).emit('gameStateUpdate', { gameId, gameState: ludoGameLogic.getGameState(game) });
+
+            const activeNonEliminated = game.activePlayerColors.filter(pColor => !game.eliminatedPlayers.includes(pColor));
+
+            if (activeNonEliminated.length <= 1 && game.activePlayerColors.length > 1) {
+                 console.log(`[Game Timer] Game ${gameId} ending due to eliminations. Active non-eliminated: ${activeNonEliminated.length}`);
+                 game.overall_game_over = true;
+                 if (activeNonEliminated.length === 1) {
+                     game.overall_game_winner = activeNonEliminated[0];
+                     game.playerScores[game.overall_game_winner] = (game.playerScores[game.overall_game_winner] || 0) + game.targetVictories;
+                 }
+                 io.to(gameId).emit('overallGameOver', {
+                    winnerColor: game.overall_game_winner,
+                    winnerName: game.overall_game_winner ? game.playerNames[game.overall_game_winner] : null,
+                    finalScores: game.playerScores,
+                    message: game.overall_game_winner ? `${game.playerNames[game.overall_game_winner]} wins due to opponent timeouts!` : "Game over due to multiple timeouts."
+                 });
+                 if (activeGameIntervals[gameId]) {
+                    clearInterval(activeGameIntervals[gameId]);
+                    delete activeGameIntervals[gameId];
+                 }
+            } else {
+                const newCurrentPlayerColor = ludoGameLogic.getPlayerColor(game); // Variable is declared here
+                // The duplicate line that was here has been removed.
+                const newCurrentPlayerIsAI = game.playersSetup.find(p => p.color === newCurrentPlayerColor)?.isAI;
+                if (newCurrentPlayerIsAI && game.status === 'active' && !game.overall_game_over) {
+                    console.log(`[Game Timer ${gameId}] Player ${currentPlayerColor} timed out. Next player ${newCurrentPlayerColor} is AI. Triggering AI move directly.`);
+                    setTimeout(() => triggerAIMove(gameId, game), 500); // Directly call triggerAIMove
+                }
+            }
+        }
+    }
+}
+// --- End Game Tick Handler ---
+
 // Server-internal function for readiness timeout
 function handleReadinessTimeout(gameId, ioInstance) {
     const game = activeGames[gameId];
@@ -891,6 +1023,13 @@ function handleReadinessTimeout(gameId, ioInstance) {
             ioInstance.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
             // Check if first player is AI
             if (game.status === 'active') {
+                // Start game tick interval if timed game
+                if (game.gameTimeMode && game.gameTimeMode !== 'unlimited') {
+                    if (activeGameIntervals[gameId]) clearInterval(activeGameIntervals[gameId]);
+                    activeGameIntervals[gameId] = setInterval(() => { handleGameTick(gameId, io); }, 1000);
+                    console.log(`[Game Timer] Interval started for game ${gameId} with mode ${game.gameTimeMode}`);
+                }
+
                 const firstPlayerColor = ludoGameLogic.getPlayerColor(game);
                 const firstPlayerSlot = game.playersSetup.find(p => p.color === firstPlayerColor);
                 if (firstPlayerSlot && firstPlayerSlot.isAI) {
@@ -957,6 +1096,12 @@ function checkInactiveGames() {
                             // Optionally, perform other cleanup specific to each socket if needed
                         }
                     });
+                }
+                // Clear interval when game is destroyed by inactivity
+                if (activeGameIntervals[gameId]) {
+                    clearInterval(activeGameIntervals[gameId]);
+                    delete activeGameIntervals[gameId];
+                    console.log(`[Game Timer] Cleared interval for inactive game ${gameId}.`);
                 }
                 delete activeGames[gameId];
             }
@@ -1097,6 +1242,12 @@ async function triggerAIMove(gameId, game) {
                     winnerName: game.playerNames[game.overall_game_winner],
                     finalScores: game.playerScores
                 });
+                // Clear interval on overall game over (AI move)
+                if (activeGameIntervals[gameId]) {
+                    clearInterval(activeGameIntervals[gameId]);
+                    delete activeGameIntervals[gameId];
+                    console.log(`[Game Timer] Cleared interval for game ${gameId} due to overall game over (AI move).`);
+                }
                 const winnerName = game.playerNames[game.overall_game_winner];
                 if (winnerName) { // Update global scores if winner exists
                     globalPlayerScores[winnerName] = (globalPlayerScores[winnerName] || 0) + 2; // Simplified scoring
