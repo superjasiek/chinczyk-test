@@ -184,6 +184,15 @@ function getPotentialDestinationCellId(pawn, diceRoll, pawnColor, gameState, con
 export default function Board({ gameState, myPlayerColor, movablePawnIds, onPawnClick }) {
   const [hoverHighlightedCellId, setHoverHighlightedCellId] = useState(null); // Added state for hover highlight
 
+  // Destructure blackHoleModeEnabled and blackHolePosition from gameState
+  const blackHoleModeEnabled = gameState?.blackHoleModeEnabled;
+  const blackHolePosition = gameState?.board?.blackHolePosition; // Access safely
+
+  let blackHoleCellId = null;
+  if (blackHoleModeEnabled && typeof blackHolePosition === 'number' && blackHolePosition >= 0 && blackHolePosition < MAIN_PATH_SEQUENCE.length) {
+    blackHoleCellId = MAIN_PATH_SEQUENCE[blackHolePosition];
+  }
+
   console.log('[Board.js] Received gameState:', gameState);
   if (gameState && gameState.pawns) {
       console.log('[Board.js] Received gameState.pawns:', gameState.pawns); 
@@ -328,8 +337,13 @@ Stretch Pos: ${pawn.home_stretch_position}`}
         cellStyle.backgroundColor = 'rgba(255, 255, 0, 0.5)'; // Yellow highlight
       }
 
+      let cellClasses = `cell ${getCellClassName(cellId)}`;
+      if (blackHoleCellId && cellId === blackHoleCellId) {
+          cellClasses += ' black-hole-cell';
+      }
+
       return (
-          <div key={cellId} id={cellId} className={`cell ${getCellClassName(cellId)}`} style={cellStyle}> {/* Use cellStyle for potential highlight */}
+          <div key={cellId} id={cellId} className={cellClasses} style={cellStyle}> {/* Use cellClasses and cellStyle */}
               {/* <span style={{
                   fontSize: '8px', 
                   position: 'absolute', 

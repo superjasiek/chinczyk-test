@@ -4,6 +4,7 @@ import './Lobby.css'; // We'll create this CSS file next
 const Lobby = ({ onCreateGame, onJoinGame, errorMsg, clearError }) => {
   // State for creating a game
   const [createPlayerName, setCreatePlayerName] = useState('');
+  const [playWithAI, setPlayWithAI] = useState(false); // Added state for AI opponent
   
   // State for joining a game
   const [activeGamesList, setActiveGamesList] = useState([]);
@@ -67,7 +68,8 @@ const Lobby = ({ onCreateGame, onJoinGame, errorMsg, clearError }) => {
       return;
     }
     onCreateGame({ 
-      playerName: createPlayerName.trim()
+      playerName: createPlayerName.trim(),
+      enableAI: playWithAI // Added enableAI flag
     });
   };
 
@@ -105,6 +107,15 @@ const Lobby = ({ onCreateGame, onJoinGame, errorMsg, clearError }) => {
             onChange={(e) => setCreatePlayerName(e.target.value)} 
             placeholder="Podaj imię" 
             required 
+          />
+        </div>
+        <div className="form-group">
+          <label htmlFor="playWithAICheckbox">Gra przeciwko AI?</label>
+          <input
+            type="checkbox"
+            id="playWithAICheckbox"
+            checked={playWithAI}
+            onChange={(e) => setPlayWithAI(e.target.checked)}
           />
         </div>
         <button onClick={handleCreate} className="lobby-button create-button">Utwórz grę</button>

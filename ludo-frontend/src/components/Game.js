@@ -5,9 +5,10 @@ import Dice from './Dice';
 import PlayerArea from './PlayerArea';
 import './Game.css';
 
-const Game = ({ gameId: propGameId, myPlayerName, initialGameState, onReturnToLobby }) => { // assignedPlayerColor removed
+const Game = ({ gameId: propGameId, myPlayerName, initialGameState, onReturnToLobby }) => { 
   // Comment removed as the log will be placed correctly after state declarations.
   console.log("[Game.js MOUNT] initialGameState received:", JSON.stringify(initialGameState, null, 2));
+  // console.log("[Game.js MOUNT] enableEarthquakeModeSettingFromLobby received:", enableEarthquakeModeSettingFromLobby); // Prop removed
 
   const [gameState, setGameState] = useState(initialGameState);
   const [myPlayerColor, setMyPlayerColor] = useState(null); // Changed from useState(assignedPlayerColor)
@@ -15,6 +16,8 @@ const Game = ({ gameId: propGameId, myPlayerName, initialGameState, onReturnToLo
 
   const [numPlayers, setNumPlayers] = useState(initialGameState.num_players || 2);
   const [targetVictories, setTargetVictories] = useState(initialGameState.targetVictories || 1);
+  const [blackHoleMode, setBlackHoleMode] = useState(false);
+  const [earthquakeModeSetting, setEarthquakeModeSetting] = useState(false); // State for the new toggle in Game.js
   
   const availableColors = ["Red", "Green", "Yellow", "Blue"];
 
@@ -28,6 +31,15 @@ const Game = ({ gameId: propGameId, myPlayerName, initialGameState, onReturnToLo
   const [readinessTimer, setReadinessTimer] = useState(0);
   const [readyPlayersStatus, setReadyPlayersStatus] = useState({});
   const [readinessConfirmedBySelf, setReadinessConfirmedBySelf] = useState(false);
+
+  const [showEarthquakeIndicator, setShowEarthquakeIndicator] = useState(false);
+  const [earthquakeIndicatorMessage, setEarthquakeIndicatorMessage] = useState('');
+
+  const [showBlackHoleIndicator, setShowBlackHoleIndicator] = useState(false);
+  const [blackHoleIndicatorMessage, setBlackHoleIndicatorMessage] = useState('');
+
+  const [showBlackHoleHitIndicator, setShowBlackHoleHitIndicator] = useState(false);
+  const [blackHoleHitIndicatorMessage, setBlackHoleHitIndicatorMessage] = useState('');
 
   // Refs for state/props accessed in socket handlers
   const gameStateRef = useRef(gameState);
@@ -116,11 +128,16 @@ useEffect(() => {
 }, [gameState, socket.id, myPlayerColor]);
 
 
-  const addMessage = useCallback((content, type = 'event', senderColor = null, senderName = null) => {
-      setMessages(prevMessages => [
-          { type, content, timestamp: new Date().toISOString(), displayTimestamp: new Date().toLocaleTimeString(), senderColor, senderName },
+  const addMessage = useCallback((content, type = 'event', senderColor = null, senderName = null, eventColor = null) => {
+      console.log('[Game.js addMessage] Adding message:', content, 'Type:', type, 'EventColor:', eventColor);
+      setMessages(prevMessages => {
+        const newMessages = [
+          { type, content, timestamp: new Date().toISOString(), displayTimestamp: new Date().toLocaleTimeString(), senderColor, senderName, eventColor },
           ...prevMessages.slice(0, 49)
-      ]);
+        ];
+        console.log('[Game.js addMessage] New messages array:', newMessages);
+        return newMessages;
+      });
   }, []); // setMessages is stable
 
   const handleRollDice = useCallback(() => {
@@ -215,6 +232,11 @@ useEffect(() => {
         const unwrappedGameState = data.gameState;
         console.log("[Game.js] handleGameStateUpdate - Setting unwrapped state:", JSON.stringify(unwrappedGameState));
         setGameState(unwrappedGameState); // This will trigger re-render and update gameStateRef via its own useEffect
+        console.log('[Game.js handleGameStateUpdate] Received lastLogMessage:', unwrappedGameState.lastLogMessage, 'Color:', unwrappedGameState.lastLogMessageColor);
+        if (unwrappedGameState.lastLogMessage) {
+          addMessage(unwrappedGameState.lastLogMessage, 'event', null, null, unwrappedGameState.lastLogMessageColor || null);
+          console.log('[Game.js handleGameStateUpdate] Called addMessage for:', unwrappedGameState.lastLogMessage);
+        }
 
         // Logic for clientMovablePawnIds, using unwrappedGameState and refs for other state
         const playerColorForPawnCheck = myPlayerColorRef.current; // Use ref
@@ -249,24 +271,34 @@ useEffect(() => {
     };
 
     const handleDiceRolled = (data) => {
-      const currentGameState = gameStateRef.current; // Use ref
-      const playerColorForMessage = myPlayerColorRef.current; // Use ref for self-check
+      const currentGameState = gameStateRef.current; 
+      if (!currentGameState) return; // Guard clause if needed, or ensure currentGameState is always available
 
-      let playerName = (currentGameState && currentGameState.playerNames && currentGameState.playerNames[data.playerColor]) || data.playerColor;
-      let message = `${playerName} rolled a ${data.diceValue}. Sixes streak: ${data.consecutiveSixes}.`;
-      if (data.mustRollAgain) message += " Must roll again.";
-      if (data.awaitingMove) message += " Awaiting move.";
+      let playerName = (currentGameState.playerNames && currentGameState.playerNames[data.playerColor]) || data.playerColor;
+      const message = `${playerName} rolled a ${data.diceValue}.`; // Simplified message
       addMessage(message);
-      if(data.singleMovePawnId !== undefined && data.playerColor === playerColorForMessage && data.awaitingMove) {
-          addMessage(`Server suggests pawn ID: ${data.singleMovePawnId} is the only move.`);
-      }
+      // The secondary addMessage for 'Server suggests pawn ID' should also be removed.
     };
 
     const handlePawnMoved = (data) => {
-      const currentGameState = gameStateRef.current; // Use ref
-      let playerName = (currentGameState && currentGameState.playerNames && currentGameState.playerNames[data.playerColor]) || data.playerColor;
-      let autoMoveText = data.autoMoved ? " (auto-moved by server)" : "";
-      addMessage(`${playerName} moved pawn ${data.pawnId}. New Pos: ${data.newPos}, New State: ${data.newState}${autoMoveText}.`);
+      const currentGameState = gameStateRef.current; 
+      if (!currentGameState) return; // Guard clause
+
+      // Determine if the player who moved is an AI
+      let isAIMove = false;
+      if (currentGameState.playersSetup && data.playerColor) {
+        const playerMoving = currentGameState.playersSetup.find(p => p.color === data.playerColor);
+        if (playerMoving && playerMoving.isAI) {
+          isAIMove = true;
+        }
+      }
+
+      // Only log the message if it's not an AI move
+      if (!isAIMove) {
+        let playerName = (currentGameState.playerNames && currentGameState.playerNames[data.playerColor]) || data.playerColor;
+        let autoMoveText = data.autoMoved ? " (auto-moved by server)" : ""; // autoMoveText might still be relevant if a human move was auto-moved, though less common.
+        addMessage(`${playerName} moved pawn ${data.pawnId}. New Pos: ${data.newPos}, New State: ${data.newState}${autoMoveText}.`);
+      }
     };
 
     const handleTurnChanged = (data) => {
@@ -349,6 +381,42 @@ useEffect(() => {
       setReadinessConfirmedBySelf(false); 
     };
 
+    const handleBlackHoleActivated = (data) => {
+        // data might contain { position: game.justActivatedBlackHolePosition }
+        const message = `Czarna dziura aktywowana na polu ${data.position}! Uważaj!!!`;
+        
+        // Set state to show indicator with the message
+        setBlackHoleIndicatorMessage(message);
+        setShowBlackHoleIndicator(true);
+
+        // Add to game log (original functionality)
+        addMessage(`Czarna dziura aktywowana!!!! (Position: ${data.position})`, 'event'); 
+
+        // Set a timeout to hide the indicator after ~20 seconds
+        setTimeout(() => {
+            setShowBlackHoleIndicator(false);
+            setBlackHoleIndicatorMessage(''); // Clear message
+        }, 10000); // 20 seconds
+    };
+
+    const handlePlayerHitBlackHole = (data) => {
+        const playerName = data.playerName || data.playerColor;
+        const message = `Gracz ${playerName} wdepnął w gówno i wraca do domu!`; // The requested message
+
+        // Set state to show indicator with the message FIRST
+        setBlackHoleHitIndicatorMessage(message);
+        setShowBlackHoleHitIndicator(true);
+
+        // Then add to game log
+        addMessage(message, 'event'); 
+
+        // Set a timeout to hide the indicator after ~20 seconds
+        setTimeout(() => {
+            setShowBlackHoleHitIndicator(false);
+            setBlackHoleHitIndicatorMessage(''); // Clear message
+        }, 10000); // 20 seconds
+    };
+
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
     socket.on('gameStateUpdate', handleGameStateUpdate);
@@ -367,6 +435,28 @@ useEffect(() => {
     console.log('[Game.js DEBUG] HIRC_LISTENER_ATTACHED for game:', propGameId);
     socket.on('playerReadinessUpdate', handlePlayerReadinessUpdate);
     socket.on('readinessCheckOutcome', handleReadinessCheckOutcome);
+    socket.on('blackHoleActivated', handleBlackHoleActivated);
+    socket.on('playerHitBlackHole', handlePlayerHitBlackHole);
+
+    const handleEarthquakeActivated = (data) => {
+        console.log('Earthquake activated!', data);
+        const displayMessage = data.message || "Earthquake! Pawns have been affected!"; 
+        
+        // For the timed banner
+        setEarthquakeIndicatorMessage(displayMessage);
+        setShowEarthquakeIndicator(true);
+
+        // For the game log
+        addMessage(displayMessage, 'event'); // Or a more specific type like 'earthquake-event'
+
+        // Set a timeout to hide the indicator after ~20 seconds
+        setTimeout(() => {
+            setShowEarthquakeIndicator(false);
+            setEarthquakeIndicatorMessage(''); // Clear message
+        }, 20000); // 20 seconds
+    };
+
+    socket.on('earthquakeActivated', handleEarthquakeActivated);
     
     // Keydown listener for spacebar to roll dice
     // This handler uses setGameState with a callback, which is fine.
@@ -421,6 +511,9 @@ useEffect(() => {
       socket.off('initiateReadinessCheck', handleInitiateReadinessCheck);
       socket.off('playerReadinessUpdate', handlePlayerReadinessUpdate);
       socket.off('readinessCheckOutcome', handleReadinessCheckOutcome);
+      socket.off('blackHoleActivated', handleBlackHoleActivated);
+      socket.off('playerHitBlackHole', handlePlayerHitBlackHole);
+      socket.off('earthquakeActivated', handleEarthquakeActivated);
       window.removeEventListener('keydown', handleKeyDown);
     };
   // Minimal dependencies: only things that, if they change, *must* cause listeners to re-register.
@@ -491,6 +584,7 @@ useEffect(() => {
   let currentPlayerColor = 'N/A';
   let currentPlayerDisplayName = 'N/A';
   let isMyTurn = false;
+  let isAICurrentPlayer = false; // Added for AI check
   const effectivePlayerColor = myPlayerColor; // Use the color assigned to this client
 
   // Only attempt to determine current player if not in setup phase and gameState is valid
@@ -498,13 +592,28 @@ useEffect(() => {
     if (gameState.activePlayerColors && gameState.activePlayerColors.length > 0 && typeof gameState.current_player_index === 'number') {
         const activePlayerIndex = gameState.current_player_index % gameState.activePlayerColors.length;
         currentPlayerColor = gameState.activePlayerColors[activePlayerIndex];
-        currentPlayerDisplayName = (gameState.playerNames && gameState.playerNames[currentPlayerColor]) || currentPlayerColor;
-        isMyTurn = effectivePlayerColor === currentPlayerColor;
+
+        // Check if current player is AI
+        if (gameState.playersSetup && currentPlayerColor !== 'N/A') {
+            const currentPlayerSetup = gameState.playersSetup.find(p => p.color === currentPlayerColor);
+            isAICurrentPlayer = currentPlayerSetup ? currentPlayerSetup.isAI : false;
+        }
+
+        currentPlayerDisplayName = isAICurrentPlayer ? 'Computer' : ((gameState.playerNames && gameState.playerNames[currentPlayerColor]) || currentPlayerColor);
+        isMyTurn = effectivePlayerColor === currentPlayerColor && !isAICurrentPlayer; // My turn only if human and my color
+
     } else if (gameState.players && gameState.players.length > 0 && typeof gameState.current_player_index === 'number' && gameState.current_player_index < gameState.players.length ) {
         console.warn("[Game.js] Using fallback for currentPlayerColor determination (UI render during active game). activePlayerColors might be empty or current_player_index problematic.", JSON.stringify(gameState.activePlayerColors), gameState.current_player_index);
         currentPlayerColor = gameState.players[gameState.current_player_index];
-        currentPlayerDisplayName = (gameState.playerNames && gameState.playerNames[currentPlayerColor]) || currentPlayerColor;
-        isMyTurn = effectivePlayerColor === currentPlayerColor;
+
+        // Check if current player is AI (using fallback player list)
+        if (gameState.playersSetup && currentPlayerColor !== 'N/A') {
+            const currentPlayerSetup = gameState.playersSetup.find(p => p.color === currentPlayerColor);
+            isAICurrentPlayer = currentPlayerSetup ? currentPlayerSetup.isAI : false;
+        }
+
+        currentPlayerDisplayName = isAICurrentPlayer ? 'Computer' : ((gameState.playerNames && gameState.playerNames[currentPlayerColor]) || currentPlayerColor);
+        isMyTurn = effectivePlayerColor === currentPlayerColor && !isAICurrentPlayer; // My turn only if human and my color
     } else if (gameState.status === 'active' || gameState.status === 'roundOver' || gameState.status === 'gameOver') {
         // Only log warning if not in setup and data is truly missing for an active/post-setup game state
         console.warn(`[Game.js] Cannot determine current player for UI render (status: ${gameState.status}); critical properties like activePlayerColors or players list are undefined or index out of bounds.`);
@@ -526,7 +635,7 @@ useEffect(() => {
                               !overallWinnerInfo && !roundOverInfo;
 
   const gameNotFull = isWaitingForPlayers; // Simplified, as dice should be disabled if waiting for players.
-  const diceDisabled = gameNotFull || !isMyTurn || (gameState ? gameState.awaitingMove : true) || (gameState && gameState.dice_roll !== null && !gameState.mustRollAgain) || !!roundOverInfo || !!overallWinnerInfo;
+  const diceDisabled = gameNotFull || !isMyTurn || (gameState ? gameState.awaitingMove : true) || (gameState && gameState.dice_roll !== null && !gameState.mustRollAgain) || !!roundOverInfo || !!overallWinnerInfo || isAICurrentPlayer;
   
   // Game status for UI rendering (e.g., hiding setup controls after game starts)
   // This relies on gameState being updated. initialIsSetupPhase is based on the prop.
@@ -534,14 +643,24 @@ useEffect(() => {
   // Add this log
   console.log('[Game.js SETUP PHASE CHECK] gameState.status:', gameState?.status, 'currentIsSetupPhase:', currentIsSetupPhase);
 
-  const handleStartGame = () => {
-    console.log("Creator requests game start. Settings:", { numPlayers, targetVictories });
-    socket.emit('creatorRequestsGameStart', { 
-      gameId: propGameId, 
-      settings: { numPlayers, targetVictories } 
-    });
-    // Button will be disabled via awaitingReadinessConfirm after server responds
-  };
+const handleStartGame = () => {
+  console.log("Creator requests game start. Settings:", { 
+      numPlayers, 
+      targetVictories, 
+      blackHoleMode, 
+      earthquakeMode: earthquakeModeSetting // Add the new state here
+  });
+  socket.emit('creatorRequestsGameStart', {
+    gameId: propGameId,
+    settings: { 
+        numPlayers, 
+        targetVictories, 
+        blackHoleMode, 
+        earthquakeMode: earthquakeModeSetting // Use the new local state
+    }
+  });
+  // Button will be disabled via awaitingReadinessConfirm after server responds
+};
 
   const handleConfirmReadiness = () => {
     if (socket.connected && propGameId && awaitingReadinessConfirm && !readinessConfirmedBySelf) {
@@ -577,8 +696,89 @@ useEffect(() => {
     console.log(`[Game.js RENDER] gameState is null or undefined at render time. currentPlayerDisplayName: ${currentPlayerDisplayName}, EffectiveColor: ${effectivePlayerColor}`);
   }
 
+  // Before the main return(...) statement of the Game component:
+
+  console.log('[Game.js Render] Messages state for rendering:', messages);
+  console.log("=========================================");
+  console.log("[Game.js RENDER DIAGNOSTICS]");
+  console.log("  propGameId:", propGameId);
+  console.log("  socket.id:", socket?.id);
+  console.log("  isCreator (state):", isCreator);
+  console.log("  initialGameState exists:", !!initialGameState);
+  if (initialGameState) {
+    console.log("  initialGameState.gameCreatorId:", initialGameState.gameCreatorId);
+  }
+  console.log("  gameState exists:", !!gameState);
+  if (gameState) {
+    console.log("  gameState.status:", gameState.status);
+  }
+  // Re-calculate currentIsSetupPhase here for the log, or ensure it's logged after its definition
+  const calculatedCurrentIsSetupPhase = gameState?.status === 'setup';
+  console.log("  currentIsSetupPhase (calculated for log):", calculatedCurrentIsSetupPhase);
+  console.log("  GAME_SETUP_CONTROLS_VISIBLE_CONDITION:", isCreator && calculatedCurrentIsSetupPhase);
+  console.log("=========================================");
+
   return (
     <div className="game-page-wrapper">
+      {showEarthquakeIndicator && (
+        <div className="timed-event-indicator earthquake-indicator-banner"
+             style={{
+                 position: 'fixed', // Or 'absolute' relative to a positioned parent
+                 top: '20px', // Adjust as needed
+                 left: '50%',
+                 transform: 'translateX(-50%)',
+                 backgroundColor: '#E67E22', // Earthquake-y color
+                 color: 'white',
+                 padding: '15px 25px',
+                 borderRadius: '8px',
+                 zIndex: 1000, // Ensure it's on top
+                 textAlign: 'center',
+                 fontSize: '1.2em',
+                 boxShadow: '0 4px 15px rgba(0,0,0,0.2)'
+             }}>
+            <p style={{ margin: 0 }}>{earthquakeIndicatorMessage}</p>
+        </div>
+      )}
+
+      {showBlackHoleIndicator && (
+        <div className="timed-event-indicator blackhole-indicator-banner"
+             style={{
+                 position: 'fixed',
+                 top: '80px', // Position below earthquake banner if both could show, or adjust
+                 left: '50%',
+                 transform: 'translateX(-50%)',
+                 backgroundColor: '#34495E', // Darker, black-hole-like color
+                 color: 'white',
+                 padding: '15px 25px',
+                 borderRadius: '8px',
+                 zIndex: 999, // Slightly below earthquake if they could overlap, or same
+                 textAlign: 'center',
+                 fontSize: '1.2em',
+                 boxShadow: '0 4px 15px rgba(0,0,0,0.2)'
+             }}>
+            <p style={{ margin: 0 }}>{blackHoleIndicatorMessage}</p>
+        </div>
+      )}
+
+      {showBlackHoleHitIndicator && (
+        <div className="timed-event-indicator blackhole-hit-indicator-banner"
+             style={{
+                 position: 'fixed',
+                 top: '140px', // Position below other banners, adjust as needed
+                 left: '50%',
+                 transform: 'translateX(-50%)',
+                 backgroundColor: '#C0392B', // A warning/danger color (e.g., dark red)
+                 color: 'white',
+                 padding: '15px 25px',
+                 borderRadius: '8px',
+                 zIndex: 998, // Adjust z-index if necessary relative to other banners
+                 textAlign: 'center',
+                 fontSize: '1.2em',
+                 boxShadow: '0 4px 15px rgba(0,0,0,0.2)'
+             }}>
+            <p style={{ margin: 0 }}>{blackHoleHitIndicatorMessage}</p>
+        </div>
+      )}
       <h2 className="game-title">Chińczyk: {propGameId}</h2>
       
       {isWaitingForPlayers && !currentIsSetupPhase && ( // Only show this if not in setup
@@ -598,6 +798,7 @@ useEffect(() => {
           <Board gameState={gameState} myPlayerColor={myPlayerColor} movablePawnIds={clientMovablePawnIds}
                 onPawnClick={(pawnId) => {
                   if (currentIsSetupPhase) { addMessage("Gra się jeszcze nie zaczeła.", "error"); return; }
+                  if (isAICurrentPlayer) { addMessage("Computer is thinking...", "event"); return; }
                   if (isMyTurn && gameState.awaitingMove && !roundOverInfo && !overallWinnerInfo) { handleMovePawn(pawnId); }
                   else if (isMyTurn && !gameState.awaitingMove && !roundOverInfo && !overallWinnerInfo) { addMessage("Roll the dice first, or if you rolled a 6 and can't move, roll again."); }
                   else if (!isMyTurn && !roundOverInfo && !overallWinnerInfo) { addMessage("Not your turn to move."); }
@@ -634,6 +835,26 @@ useEffect(() => {
                   <option value="2">2</option>
                   <option value="3">3</option>
                 </select>
+              </div>
+              <div className="form-group">
+                <label htmlFor="blackHoleModeCheckbox">Tryb Czarnej Dziury:</label>
+                <input
+                  type="checkbox"
+                  id="blackHoleModeCheckbox"
+                  checked={blackHoleMode}
+                  onChange={(e) => setBlackHoleMode(e.target.checked)}
+                  disabled={!currentIsSetupPhase || awaitingReadinessConfirm}
+                />
+              </div>
+              <div className="form-group">
+                <label htmlFor="earthquakeModeCheckboxGameSetup">Tryb Trzęsienie Ziemi</label>
+                <input
+                  type="checkbox"
+                  id="earthquakeModeCheckboxGameSetup" // Unique ID
+                  checked={earthquakeModeSetting}
+                  onChange={(e) => setEarthquakeModeSetting(e.target.checked)}
+                  disabled={!currentIsSetupPhase || awaitingReadinessConfirm} // Same disabled conditions
+                />
               </div>
               <button
                 onClick={handleStartGame}
@@ -684,11 +905,14 @@ useEffect(() => {
           )}
 
           {!overallWinnerInfo && !roundOverInfo && !isWaitingForPlayers && !currentIsSetupPhase && (
-            <div className={`turn-indicator ${isMyTurn ? 'my-turn' : ''}`}>
-              <h3>{isMyTurn ? "Twoja kolej!" : `${currentPlayerDisplayName}'s kolej`} {threeTryInfo}</h3>
+            <div className={`turn-indicator ${isMyTurn ? 'my-turn' : ''} ${isAICurrentPlayer ? 'ai-turn' : ''}`}>
+              <h3>
+                {isAICurrentPlayer ? "Computer's Turn" : (isMyTurn ? "Twoja kolej!" : `${currentPlayerDisplayName}'s kolej`)}
+                {threeTryInfo}
+              </h3>
             </div>
           )}
-          {!overallWinnerInfo && !roundOverInfo && gameState && gameState.awaitingMove && isMyTurn && !currentIsSetupPhase &&
+          {!overallWinnerInfo && !roundOverInfo && gameState && gameState.awaitingMove && isMyTurn && !isAICurrentPlayer && !currentIsSetupPhase &&
             <p className="action-prompt await-move">Wyrzuciłeś {gameState.dice_roll}. Wybierz pionka.</p>}
           {!overallWinnerInfo && !roundOverInfo && gameState.mustRollAgain && isMyTurn && !gameState.awaitingMove && !currentIsSetupPhase &&
             <p className="action-prompt roll-again">Rzucaj ponownie!</p>}
@@ -716,7 +940,7 @@ useEffect(() => {
           )}
 
           {!overallWinnerInfo && !roundOverInfo && !currentIsSetupPhase && (
-            <Dice value={gameState.dice_roll} onRoll={handleRollDice} isMyTurn={isMyTurn} awaitingMove={gameState.awaitingMove} mustRollAgain={gameState.mustRollAgain} disabled={diceDisabled || currentIsSetupPhase } />
+            <Dice value={gameState.dice_roll} onRoll={handleRollDice} isMyTurn={isMyTurn} awaitingMove={gameState.awaitingMove} mustRollAgain={gameState.mustRollAgain} disabled={diceDisabled || currentIsSetupPhase || isAICurrentPlayer } />
           )}
 
           <div className="game-log-container">
@@ -724,7 +948,7 @@ useEffect(() => {
             <ul className="game-log-list">{messages.map((msg, index) => (
               <li
                   key={index}
-                  className={`log-message ${msg.type === 'chat' ? 'chat-message' : 'event-message'}`}
+                  className={`log-message ${msg.type === 'chat' ? 'chat-message' : 'event-message'} ${msg.eventColor ? 'funny-message' : ''}`}
               >
                   <span className="timestamp">[{msg.displayTimestamp}]</span>
                   {msg.type === 'chat' ? (
@@ -736,7 +960,9 @@ useEffect(() => {
                           {`: ${msg.content.startsWith((msg.senderName || msg.senderColor || 'Player') + ': ') ? msg.content.substring((msg.senderName || msg.senderColor || 'Player').length + 2) : msg.content}`}
                       </span>
                   ) : (
-                      <span className="message-content">{msg.content}</span>
+                      <span className="message-content" style={{ color: msg.eventColor || 'inherit' }}>
+                          {msg.content}
+                      </span>
                   )}
               </li>
             ))}

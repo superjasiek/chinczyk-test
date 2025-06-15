@@ -276,3 +276,7 @@ button.lobby-button.creator-start-game-button:disabled {
   align-items: start;   /* Align PlayerArea components to the top of their grid cell */
   /* margin-top: 20px; /* Optional: if more space is needed above this section */
 }
+
+.game-log-list .funny-message .message-content {
+  font-weight: bold;
+}
