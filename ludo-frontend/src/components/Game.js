@@ -243,7 +243,18 @@ useEffect(() => {
     // For now, let's focus on event handlers.
 
     const handleConnect = () => addMessage('Reconnected to server. Socket ID: ' + socket.id);
-    const handleDisconnect = (reason) => addMessage('Disconnected from server: ' + reason);
+    const handleDisconnect = (reason) => {
+      const currentOverallWinnerInfo = overallWinnerInfoRef.current; // Use the ref
+      if (currentOverallWinnerInfo) {
+        // Game has already ended, a winner is declared.
+        // Option 1: Add a more subtle message or log to console.
+        console.log('Socket disconnected after game ended. Reason:', reason);
+        // addMessage('Connection closed after game conclusion.', 'event-debug'); // Optional, less prominent
+      } else {
+        // Game was likely in progress or setup.
+        addMessage('Disconnected from server: ' + reason, 'error'); // Keep as error if game not ended
+      }
+    };
 
     const handleGameStateUpdate = (data) => {
       console.log("[Game.js] handleGameStateUpdate - Received raw data:", JSON.stringify(data));
@@ -346,11 +357,17 @@ useEffect(() => {
     };
 
     const handleOverallGameOver = (data) => {
-        setOverallWinnerInfo(data); // This will update overallWinnerInfoRef
+        // Store the message from the server
+        setOverallWinnerInfo({ ...data, gameOverMessage: data.message }); // This will update overallWinnerInfoRef
         setRoundOverInfo(null); // This will update roundOverInfoRef
         const currentGameState = gameStateRef.current; // Use ref
         const winnerName = data.winnerName || (currentGameState && currentGameState.playerNames && currentGameState.playerNames[data.winnerColor]) || data.winnerColor;
+        // The main announcement in the log
         addMessage(`Koniec Gry! Wygrywem zostaje: ${winnerName}. Wynik:  ${JSON.stringify(data.finalScores)}`);
+        // Server message (reason for game over) will be displayed in the UI, but can also be logged if desired
+        if (data.message) {
+            addMessage(`Powód: ${data.message}`, 'event');
+        }
     };
 
     const handleNextRoundStarted = (data) => {
@@ -492,7 +509,7 @@ useEffect(() => {
       // This client-side handler can log or provide an additional, perhaps more immediate, notification.
       console.log(`[Game.js] Player Eliminated Event Received: ${data.playerName} (${data.playerColor}). Message: ${data.message}`);
       // Example of adding a specific message if desired, though lastLogMessage from gameStateUpdate should cover it.
-      // addMessage(`${data.playerName || data.playerColor} has been eliminated by timeout.`, 'event', data.playerColor);
+      // addMessage(`${data.playerName || data.playerColor} has been eliminated by timeout.`, 'event', data.playerColor); // Commented out as per instructions
     };
     socket.on('playerEliminated', handlePlayerEliminated);
 
@@ -998,6 +1015,7 @@ const handleStartGame = () => {
             <div className="game-over-message overall-game-over">
                 <h3>GAME OVER!</h3>
                 <p>Wygrywem jest: <span style={{color: overallWinnerInfo.winnerColor, fontWeight: 'bold'}}>{overallWinnerInfo.winnerName || overallWinnerInfo.winnerColor}</span>!</p>
+                {overallWinnerInfo.gameOverMessage && <p className="game-over-reason">{overallWinnerInfo.gameOverMessage}</p>}
                 <h4>Finalne wyniki:</h4>
                 <ul>{Object.entries(overallWinnerInfo.finalScores || {}).map(([color, score]) => (<li key={color} style={{color: color}}>{(gameState.playerNames && gameState.playerNames[color]) || color}: {score}</li>))}</ul>
                 <button onClick={onReturnToLobby} className="lobby-button">Return to Lobby</button>
