@@ -316,12 +316,19 @@ function switchPlayer(game) {
         }
 
         // Check if all players are eliminated (e.g. if only one non-eliminated player remains, they are the winner)
-        // This basic check might be expanded in server.js
         const activeNonEliminatedPlayers = game.activePlayerColors.filter(pColor => !game.eliminatedPlayers.includes(pColor));
-        if (activeNonEliminatedPlayers.length <= 1 && game.activePlayerColors.length > 1) { // If 1 or 0 players left, and there was more than 1 to start
+
+        if (game.activePlayerColors.length > 1 && activeNonEliminatedPlayers.length === 1) {
+            game.overall_game_over = true;
+            game.overall_game_winner = activeNonEliminatedPlayers[0];
+            game.status = 'gameOver';
+            console.log(`Game over! Player ${game.overall_game_winner} is the winner as all other players ran out of time.`);
+            // No need to switch player or update timers further, game has ended.
+            return;
+        } else if (activeNonEliminatedPlayers.length <= 1 && game.activePlayerColors.length > 1) {
+             // This condition now handles 0 active non-eliminated players or if the above specific winner condition wasn't met.
              // Game might end or round might end. Server should handle this state.
-             // For now, just log. A more robust solution might set a game state.
-             console.log("All or all but one player eliminated by timer. Game may need to end.");
+             console.log("All or all but one player eliminated by timer. Game may need to end (or draw if 0 players left).");
         }
 
     } else {
@@ -671,6 +678,11 @@ function startNextRound(game) {
 }
 
 function checkForGameVictory(game) {
+    // If game is already over (e.g., by timer in switchPlayer), respect that.
+    if (game.overall_game_over) {
+        return { overallWinnerFound: true, winner: game.overall_game_winner };
+    }
+
     if (!game.round_over || !game.round_winner) {
         return { overallWinnerFound: false, winner: null };
     }
