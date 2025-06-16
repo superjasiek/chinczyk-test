@@ -967,7 +967,7 @@ function handleGameTick(gameId, io) {
 
             ludoGameLogic.switchPlayer(game);
 
-            io.to(gameId).emit('gameStateUpdate', { gameId, gameState: ludoGameLogic.getGameState(game) });
+            io.to(gameId).emit('gameStateUpdate', { gameId, gameState: getGameState(game) });
 
             const activeNonEliminated = game.activePlayerColors.filter(pColor => !game.eliminatedPlayers.includes(pColor));
 
@@ -984,10 +984,18 @@ function handleGameTick(gameId, io) {
                     finalScores: game.playerScores,
                     message: game.overall_game_winner ? `${game.playerNames[game.overall_game_winner]} wins due to opponent timeouts!` : "Game over due to multiple timeouts."
                  });
-                 if (activeGameIntervals[gameId]) {
-                    clearInterval(activeGameIntervals[gameId]);
-                    delete activeGameIntervals[gameId];
-                 }
+
+                 // Delay cleanup operations
+                 setTimeout(() => {
+                    if (activeGameIntervals[gameId]) {
+                        clearInterval(activeGameIntervals[gameId]);
+                        delete activeGameIntervals[gameId];
+                        console.log(`[Game Timer] Delayed cleanup for game ${gameId} executed.`);
+                    }
+                    // Note: delete activeGames[gameId] is not in this specific block.
+                    // If it needs to be delayed, it should be handled where it's called for this game over scenario.
+                 }, 3000);
+
             } else {
                 const newCurrentPlayerColor = ludoGameLogic.getPlayerColor(game); // Variable is declared here
                 // The duplicate line that was here has been removed.
