@@ -233,113 +233,55 @@ io.on('connection', (socket) => {
     if (game.awaitingMove) {
         return socket.emit('actionError', { message: 'A move is pending for the previous dice roll.' });
     }
-    game.mustRollAgain = false; 
+    // game.mustRollAgain = false; // This will be handled by processPlayerRoll
 
-    // Roll dice first
-    let diceResult = ludoGameLogic.rollDice();
-    game.dice_roll = diceResult;
+    // Get the actual dice value rolled by the player
+    const diceRolledByPlayer = ludoGameLogic.rollDice();
 
-    // Earthquake Mercy Re-roll Logic
-    if (earthquakeJustOccurred &&
-        ludoGameLogic.areAllPawnsHome(game, actualPlayerColor) &&
-        game.dice_roll !== 6) {
+    // Let the game logic process this roll and update game state accordingly
+    // game.dice_roll, game.awaitingMove, game.mustRollAgain, game.consecutive_sixes_count, game.threeTryAttempts etc. are set inside processPlayerRoll
+    const rollOutcome = ludoGameLogic.processPlayerRoll(game, actualPlayerColor, diceRolledByPlayer);
 
-        console.log(`[rollDice ${gameId}] Player ${actualPlayerColor} granted earthquake mercy re-roll.`);
-        game.mustRollAgain = true;
-        game.awaitingMove = false;
-        // game.threeTryAttempts is NOT incremented in this specific case.
-        game.lastLogMessage = "Earthquake trapped your pawns! You get a mercy re-roll.";
-        game.lastLogMessageColor = actualPlayerColor;
+    // Determine if there's a single automatic move
+    let singleMovePawnId = null;
+    if (game.awaitingMove && rollOutcome.movablePawns && rollOutcome.movablePawns.length === 1) {
+        // If only one pawn is movable, some UIs might auto-select it.
+        // The server doesn't auto-move it here, just signals the possibility.
+        // Actual auto-move logic, if any, for "all pawns home, rolled 6" is inside processPlayerRoll.
+        singleMovePawnId = rollOutcome.movablePawns[0];
+    }
 
-    } else if (ludoGameLogic.areAllPawnsHome(game, actualPlayerColor)) { // Standard "all pawns home" logic
-        game.threeTryAttempts++;
-        // Dice already rolled and set to game.dice_roll
-        
-        if (game.dice_roll === 6) {
-            game.consecutive_sixes_count = 1; 
-            game.threeTryAttempts = 0; 
-            const homePawns = game.pawns[actualPlayerColor].filter(p => p.state === ludoGameLogic.PAWN_STATES.HOME);
-            if (homePawns.length > 0) {
-                const pawnToMoveId = homePawns[0].id; 
-                ludoGameLogic.movePawn(game, actualPlayerColor, pawnToMoveId, game.dice_roll); // Use game.dice_roll
-                io.to(gameId).emit('pawnMoved', { playerColor: actualPlayerColor, pawnId: pawnToMoveId, diceValue: game.dice_roll, newPos: game.pawns[actualPlayerColor].find(p=>p.id === pawnToMoveId).position, autoMoved: true });
-            }
-            game.mustRollAgain = true; 
-            game.awaitingMove = false; 
-        } else { 
-            if (game.threeTryAttempts === 3) {
-                game.threeTryAttempts = 0;
-                ludoGameLogic.switchPlayer(game);
-                // No need to call checkAndEmitEarthquake here again as it was done after the earthquake trigger itself.
-                // The mercy roll logic specifically applies *after* an earthquake has just occurred and been processed.
-                const newCurrentPlayerColor = ludoGameLogic.getPlayerColor(game);
-                io.to(gameId).emit('turnChanged', { currentPlayer: newCurrentPlayerColor });
-                if (game.status === 'active') {
-                    const nextPlayerSlot = game.playersSetup.find(p => p.color === newCurrentPlayerColor);
-                    if (nextPlayerSlot && nextPlayerSlot.isAI) {
-                        console.log(`[rollDice ${gameId}] Human (all home, 3 tries no 6) turn ended, next player ${newCurrentPlayerColor} is AI. Triggering AI move.`);
-                        setTimeout(() => triggerAIMove(gameId, game), 500);
-                    }
-                }
-            } else {
-                game.mustRollAgain = true; 
-                game.awaitingMove = false; 
-            }
-        }
-    } else { // Standard "pawns on board" logic
-        // Dice already rolled and set to game.dice_roll
+    // Emit the diceRolled event with the state from the game object, now updated by processPlayerRoll
+    io.to(gameId).emit('diceRolled', {
+        playerColor: actualPlayerColor,
+        diceValue: game.dice_roll, // This is set by processPlayerRoll
+        consecutiveSixes: game.consecutive_sixes_count, // Updated by processPlayerRoll
+        mustRollAgain: game.mustRollAgain, // Updated by processPlayerRoll
+        awaitingMove: game.awaitingMove, // Updated by processPlayerRoll
+        singleMovePawnId: singleMovePawnId, // Inform client if only one pawn can be moved
+        reason: rollOutcome.reason // Optional: provide reason for certain outcomes
+    });
 
-        if (game.dice_roll === 6) {
-            game.consecutive_sixes_count++;
-        } else {
-            game.consecutive_sixes_count = 0;
-        }
+    // If the roll outcome indicates the turn should end
+    if (rollOutcome.turnEnds) {
+        ludoGameLogic.switchPlayer(game); // Switch player in the game state
+        const newCurrentPlayerColor = ludoGameLogic.getPlayerColor(game);
+        io.to(gameId).emit('turnChanged', { currentPlayer: newCurrentPlayerColor });
 
-        if (game.consecutive_sixes_count === 3) {
-            io.to(gameId).emit('rolledThreeSixes', { playerColor: actualPlayerColor, diceResult: game.dice_roll }); // Use game.dice_roll
-            ludoGameLogic.switchPlayer(game);
-            // No need to call checkAndEmitEarthquake here again.
-            const newCurrentPlayerColor = ludoGameLogic.getPlayerColor(game);
-            io.to(gameId).emit('turnChanged', { currentPlayer: newCurrentPlayerColor });
-            if (game.status === 'active') {
-                const nextPlayerSlot = game.playersSetup.find(p => p.color === newCurrentPlayerColor);
-                if (nextPlayerSlot && nextPlayerSlot.isAI) {
-                    console.log(`[rollDice ${gameId}] Human (3 sixes) turn ended, next player ${newCurrentPlayerColor} is AI. Triggering AI move.`);
-                    setTimeout(() => triggerAIMove(gameId, game), 500);
-                }
-            }
-        } else {
-            const movablePawns = ludoGameLogic.getMovablePawns(game, actualPlayerColor, game.dice_roll); // Use game.dice_roll
-            if (movablePawns.length === 0) {
-                if (game.dice_roll !== 6) {
-                    ludoGameLogic.switchPlayer(game);
-                    // No need to call checkAndEmitEarthquake here again.
-                    const newCurrentPlayerColor = ludoGameLogic.getPlayerColor(game);
-                    io.to(gameId).emit('turnChanged', { currentPlayer: newCurrentPlayerColor });
-                    if (game.status === 'active') {
-                        const nextPlayerSlot = game.playersSetup.find(p => p.color === newCurrentPlayerColor);
-                        if (nextPlayerSlot && nextPlayerSlot.isAI) {
-                            console.log(`[rollDice ${gameId}] Human (no movable pawns, not 6) turn ended, next player ${newCurrentPlayerColor} is AI. Triggering AI move.`);
-                            setTimeout(() => triggerAIMove(gameId, game), 500);
-                        }
-                    }
-                } else { 
-                    game.mustRollAgain = true;
-                }
-            } else { 
-                game.awaitingMove = true;
-                if (movablePawns.length === 1) {
-                     // diceResult variable is out of scope here, use game.dice_roll
-                     io.to(gameId).emit('diceRolled', { playerColor: actualPlayerColor, diceValue: game.dice_roll, consecutiveSixes: game.consecutive_sixes_count, mustRollAgain: game.mustRollAgain, awaitingMove: game.awaitingMove, singleMovePawnId: movablePawns[0] });
-                     io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
-                     return; 
-                }
+        // If the new player is an AI, trigger their move
+        if (game.status === 'active' && !game.overall_game_over) {
+            const nextPlayerSlot = game.playersSetup.find(p => p.color === newCurrentPlayerColor);
+            if (nextPlayerSlot && nextPlayerSlot.isAI) {
+                console.log(`[rollDice Handler Refactored ${gameId}] Player ${actualPlayerColor}'s turn ended. Next player ${newCurrentPlayerColor} is AI. Triggering AI move.`);
+                setTimeout(() => triggerAIMove(gameId, game), 500); // Delay for AI move for better UX
             }
         }
     }
-    
-    // diceResult variable is out of scope here, use game.dice_roll for emitting
-    io.to(gameId).emit('diceRolled', { playerColor: actualPlayerColor, diceValue: game.dice_roll, consecutiveSixes: game.consecutive_sixes_count, mustRollAgain: game.mustRollAgain, awaitingMove: game.awaitingMove });
+    // If rollOutcome.mustRollAgain is true and turnEnds is false, the game state (game.mustRollAgain) is already true.
+    // The client will see mustRollAgain: true from the 'diceRolled' event and allow another roll.
+    // If game.awaitingMove is true, the client will proceed to handle the pawn move.
+
+    // Always send a full game state update at the end of the action.
     io.to(gameId).emit('gameStateUpdate', { gameState: getGameState(game) });
   });
 

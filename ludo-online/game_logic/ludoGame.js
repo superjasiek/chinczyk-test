@@ -194,6 +194,8 @@ function getPlayerColor(game) {
         const playerIndex = game.current_player_index % game.activePlayerColors.length;
         return game.activePlayerColors[playerIndex];
     }
+    // If activePlayerColors is problematic, log debug info before erroring
+    console.log(`[ludoGame.js getPlayerColor DEBUG] Status: ${game.status}, ActiveColors: ${JSON.stringify(game.activePlayerColors)}, CurrentIndex: ${game.current_player_index}`);
     console.error("[ludoGame.js getPlayerColor] Error: activePlayerColors is undefined, empty, or current_player_index is problematic.");
     return null;
 }
@@ -271,6 +273,7 @@ function getMovablePawns(game, playerColor, diceValue) {
 }
 
 function switchPlayer(game) {
+    console.log(`[ludoGame.js switchPlayer DEBUG START] Status: ${game.status}, CurrentPlayerIndex (ending turn): ${game.current_player_index}, ActiveColors: ${JSON.stringify(game.activePlayerColors)}, NumPlayers: ${game.num_players}`);
     game.lastActivityTime = Date.now();
     game.lastLogMessage = null;
     game.lastLogMessageColor = null;
@@ -385,8 +388,18 @@ function switchPlayer(game) {
             }
         }
         // The specific game over check that was here previously is removed, as the new one is more comprehensive and placed earlier.
+
+        // Log state after determining next player and skipping eliminated ones
+        if (game.activePlayerColors && game.activePlayerColors.length > 0) {
+            const nextPlayerColor = game.activePlayerColors[game.current_player_index % game.activePlayerColors.length];
+            console.log(`[ludoGame.js switchPlayer DEBUG END] NextPlayerIndex: ${game.current_player_index}, NextPlayerColor: ${nextPlayerColor}, ActiveColors: ${JSON.stringify(game.activePlayerColors)}, NumPlayers: ${game.num_players}`);
+        } else {
+            console.log(`[ludoGame.js switchPlayer DEBUG END] NextPlayerIndex: ${game.current_player_index}, NO ACTIVE PLAYERS or activePlayerColors empty. ActiveColors: ${JSON.stringify(game.activePlayerColors)}, NumPlayers: ${game.num_players}`);
+        }
+
     } else { // c. Else (if activePlayerColors became empty and game over check didn't catch it)
         if (!game.overall_game_over) { // Only log if game wasn't already set to over by the timer logic
+            console.log(`[ludoGame.js switchPlayer DEBUG END] activePlayerColors is empty. Status: ${game.status}, CurrentPlayerIndex: ${game.current_player_index}, ActiveColors: ${JSON.stringify(game.activePlayerColors)}, NumPlayers: ${game.num_players}`);
             console.error("[ludoGame.js switchPlayer] Error: activePlayerColors is empty, but game was not declared over. Setting game over.");
             game.overall_game_over = true;
             game.status = 'gameOver';
