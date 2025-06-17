@@ -276,24 +276,70 @@ function switchPlayer(game) {
     game.lastLogMessageColor = null;
     if (game.status !== 'active') return;
 
+    let playerWasPermanentlyEliminatedThisTurn = false;
+    let originalIndexOfEndingPlayer = -1; // Will be set if a player's turn ends due to timer
+
     // --- Timer Logic: Update previous player's timer ---
     if (game.gameTimeMode && game.gameTimeMode !== 'unlimited' && game.playerTurnStartTime !== null && game.activePlayerColors && game.activePlayerColors.length > 0) {
         const now = Date.now();
-        const previousPlayerIndex = game.current_player_index % game.activePlayerColors.length; // current_player_index is still for the player whose turn just ended
-        const previousPlayerColor = game.activePlayerColors[previousPlayerIndex];
+        // Determine previous player BEFORE any potential modification to activePlayerColors or current_player_index
+        const previousPlayerColor = game.activePlayerColors[game.current_player_index % game.activePlayerColors.length];
+        const originalActivePlayerColorsLength = game.activePlayerColors.length;
+        originalIndexOfEndingPlayer = game.current_player_index % originalActivePlayerColorsLength; // Index of previousPlayerColor
+
         const previousPlayerIsAI = game.playersSetup.find(p => p.color === previousPlayerColor)?.isAI;
 
         if (previousPlayerColor && !game.eliminatedPlayers.includes(previousPlayerColor) && !previousPlayerIsAI) {
             const elapsedSeconds = Math.floor((now - game.playerTurnStartTime) / 1000);
             if (game.playerTimers[previousPlayerColor] !== null) {
                 game.playerTimers[previousPlayerColor] -= elapsedSeconds;
-                // Basic elimination check (server might do more complex checks)
+
                 if (game.playerTimers[previousPlayerColor] <= 0) {
                     game.playerTimers[previousPlayerColor] = 0; // Ensure timer doesn't go negative
+
                     if (!game.eliminatedPlayers.includes(previousPlayerColor)) {
+                        // 1. Add to game.eliminatedPlayers (for current round skipping if other logic relies on it)
+                        // This list is for players who are skipped for a round (e.g. 3 sixes),
+                        // but also for those out by timer for this game over check.
+                        // The prompt implies eliminatedPlayers is used for both round skipping and permanent.
+                        // For permanent removal from active play, we filter activePlayerColors.
                         game.eliminatedPlayers.push(previousPlayerColor);
-                        console.log(`Player ${previousPlayerColor} eliminated due to timer.`);
-                        // Further logic for handling elimination (e.g., skipping turns) will be managed by server / turn progression logic.
+                    }
+
+                    // 2. Store originalIndexOfEndingPlayer (done above)
+
+                    // 3. Filter previousPlayerColor out of game.activePlayerColors
+                    const initialActiveLength = game.activePlayerColors.length;
+                    game.activePlayerColors = game.activePlayerColors.filter(color => color !== previousPlayerColor);
+
+                    // 4. If a player was actually removed:
+                    if (game.activePlayerColors.length < initialActiveLength) {
+                        game.num_players--; // a. Decrement game.num_players
+                        playerWasPermanentlyEliminatedThisTurn = true; // b. Set flag
+                        // c. Log permanent elimination
+                        console.log(`Player ${previousPlayerColor} PERMANENTLY eliminated due to timer. Active players: ${game.activePlayerColors.join(', ')}`);
+                    }
+
+
+                    // 5. Immediately after this potential permanent elimination, check if the game should end:
+                    const activeNonEliminatedPlayers = game.activePlayerColors.filter(pColor => !game.eliminatedPlayers.includes(pColor));
+
+                    const gameOverConditionMet =
+                        (game.activePlayerColors.length > 0 && activeNonEliminatedPlayers.length === 1 && originalActivePlayerColorsLength > 1) ||
+                        (activeNonEliminatedPlayers.length === 0 && game.activePlayerColors.length >= 0 && originalActivePlayerColorsLength > 0);
+
+                    if (gameOverConditionMet) {
+                        game.overall_game_over = true;
+                        game.status = 'gameOver';
+                        if (activeNonEliminatedPlayers.length === 1) {
+                            game.overall_game_winner = activeNonEliminatedPlayers[0];
+                            console.log(`Game Over! Player ${game.overall_game_winner} is the winner. Player ${previousPlayerColor} was eliminated by timer.`);
+                        } else {
+                            game.overall_game_winner = null; // Draw or no winner
+                            console.log(`Game Over! No winner, all remaining players eliminated or game ended by timer. Player ${previousPlayerColor} was eliminated by timer.`);
+                        }
+                        // iv. return from switchPlayer
+                        return;
                     }
                 }
             }
@@ -301,38 +347,52 @@ function switchPlayer(game) {
     }
     // --- End Timer Logic for previous player ---
 
-    // Earthquake mode check (Removed old logic)
+    // Earthquake mode check (Removed old logic) - This comment was already here, keeping it.
     // New earthquake logic will be called elsewhere or handled differently
 
+    // 6. If the game is not over:
+    // a. Reset game.consecutive_sixes_count
     game.consecutive_sixes_count = 0;
+
+    // b. If game.activePlayerColors is not empty:
     if (game.activePlayerColors && game.activePlayerColors.length > 0) {
+        // i. If playerWasPermanentlyEliminatedThisTurn, adjust index before increment
+        if (playerWasPermanentlyEliminatedThisTurn && originalIndexOfEndingPlayer !== -1) {
+            // The player at originalIndexOfEndingPlayer was removed.
+            // We want the next player to be effectively (originalIndexOfEndingPlayer % newLength).
+            // If originalIndexOfEndingPlayer was 0 and player removed, next player is 0 in new list.
+            // If originalIndexOfEndingPlayer was 1 and player removed, next player is 1 in new list (if exists).
+            // The goal is that after the increment, it points to the correct next player.
+            // So, set current_player_index such that after +1, it's the correct player.
+            // (originalIndexOfEndingPlayer - 1 + newLength) % newLength gives the position *before* incrementing.
+            game.current_player_index = (originalIndexOfEndingPlayer - 1 + game.activePlayerColors.length) % game.activePlayerColors.length;
+        }
+
+        // ii. Increment current_player_index
         game.current_player_index = (game.current_player_index + 1) % game.activePlayerColors.length;
 
-        // Skip eliminated players
-        let attempts = 0; // To prevent infinite loop if all players eliminated
+        // iii. The existing while loop to skip players in game.eliminatedPlayers
+        let attempts = 0;
         while (game.eliminatedPlayers.includes(game.activePlayerColors[game.current_player_index % game.activePlayerColors.length]) && attempts < game.activePlayerColors.length) {
             game.current_player_index = (game.current_player_index + 1) % game.activePlayerColors.length;
             attempts++;
+            if (attempts >= game.activePlayerColors.length) { // Safety break: all remaining are eliminated (should be caught by game over)
+                console.error("[ludoGame.js switchPlayer] All active players are in eliminatedPlayers. This should have been a game over.");
+                game.overall_game_over = true;
+                game.status = 'gameOver';
+                game.overall_game_winner = null;
+                return;
+            }
         }
-
-        // Check if all players are eliminated (e.g. if only one non-eliminated player remains, they are the winner)
-        const activeNonEliminatedPlayers = game.activePlayerColors.filter(pColor => !game.eliminatedPlayers.includes(pColor));
-
-        if (game.activePlayerColors.length > 1 && activeNonEliminatedPlayers.length === 1) {
+        // The specific game over check that was here previously is removed, as the new one is more comprehensive and placed earlier.
+    } else { // c. Else (if activePlayerColors became empty and game over check didn't catch it)
+        if (!game.overall_game_over) { // Only log if game wasn't already set to over by the timer logic
+            console.error("[ludoGame.js switchPlayer] Error: activePlayerColors is empty, but game was not declared over. Setting game over.");
             game.overall_game_over = true;
-            game.overall_game_winner = activeNonEliminatedPlayers[0];
             game.status = 'gameOver';
-            console.log(`Game over! Player ${game.overall_game_winner} is the winner as all other players ran out of time.`);
-            // No need to switch player or update timers further, game has ended.
-            return;
-        } else if (activeNonEliminatedPlayers.length <= 1 && game.activePlayerColors.length > 1) {
-             // This condition now handles 0 active non-eliminated players or if the above specific winner condition wasn't met.
-             // Game might end or round might end. Server should handle this state.
-             console.log("All or all but one player eliminated by timer. Game may need to end (or draw if 0 players left).");
+            game.overall_game_winner = null; // No winner if list is empty
         }
-
-    } else {
-        console.error("[ludoGame.js switchPlayer] Error: Cannot switch player, activePlayerColors is empty or undefined.");
+        return; // Return because no players to switch to
     }
     game.dice_roll = null;
     game.threeTryAttempts = 0;
@@ -618,16 +678,23 @@ function checkAndTriggerSecondEarthquake(game) {
 
 function startNextRound(game) {
     if (game.status !== 'roundOver' && game.status !== 'gameOver') return game; // Should only start next round if round/game is over
+
+    // Ensure game.players reflects only active, non-eliminated players
+    // game.activePlayerColors should have been updated by switchPlayer if eliminations occurred.
+    game.players = [...game.activePlayerColors];
+    // game.num_players should also be correct from switchPlayer.
     
-    game.board = initializeGameBoard(game.players); // Use game.players (active colors from previous round)
+    // Initialize board and pawns using the updated game.players list
+    game.board = initializeGameBoard(game.players);
     game.pawns = initializePawns(game.players);
 
-    game.activePlayerColors.forEach(color => {
+    // Reset player-specific round data for active players
+    game.players.forEach(color => { // Iterate over the updated game.players
         game.playerHitTimestamps[color] = [];
         game.playerConsecutiveNonSixRolls[color] = 0;
     });
 
-    game.current_player_index = Math.floor(Math.random() * game.num_players); // num_players is actual
+    game.current_player_index = Math.floor(Math.random() * game.num_players); // game.num_players should be correct
     game.dice_roll = null;
     game.consecutive_sixes_count = 0;
     game.threeTryAttempts = 0;
