@@ -1,17 +1,33 @@
 
+const LudoGame = require('./ludoGame'); // Import all exports
+
 const {
-    initializeGameState,
+    createLudoGameInstance,
+    assignPlayerToSlot,
+    handlePlayerColorSelection,
+    setGameParameters,
+    startGameActual,
     getPlayerColor,
     switchPlayer,
+    checkForGameVictory,
+    startNextRound,
+    // Constants if needed directly, though often accessed via game state
     PLAYER_COLORS,
     PAWN_STATES,
     NUM_PAWNS_PER_PLAYER,
-    PLAYER_START_POSITIONS,
-    TRACK_LENGTH,
-    HOME_STRETCH_LENGTH,
-    PLAYER_PATH_END_BEFORE_HOME_STRETCH,
-    rollDice // Assuming rollDice is also exported and might be useful
-} = require('./ludoGame');
+    // Not typically used directly in high-level tests but listed in prompt
+    // PLAYER_START_POSITIONS,
+    // TRACK_LENGTH,
+    // HOME_STRETCH_LENGTH,
+    // PLAYER_PATH_END_BEFORE_HOME_STRETCH,
+    rollDice
+} = LudoGame;
+
+
+// Keep existing tests if they are for a different setup or utility function
+// The prompt's old initializeGameState seems like a direct state setup,
+// while the new test uses the full game creation workflow.
+const initializeGameState = LudoGame.initializeGameState; // If it's still exported and used by old tests
 
 describe('Ludo Game Logic', () => {
 
@@ -274,4 +290,117 @@ describe('Ludo Game Logic', () => {
     // Placeholder for other tests like 'areAllPawnsHome', 'getMovablePawns', 'movePawn'
     // These would need similar adaptation if their logic relies on activePlayerColors or specific player turn logic.
     // For now, focusing on the requested functions.
+
+    describe('Player Elimination and Round Progression', () => {
+        // Define colors to be used in this test block consistently
+        const P_RED = "Red";
+        const P_GREEN = "Green";
+        const P_BLUE = "Blue";
+
+        test('should correctly handle player elimination by timer and ensure eliminated player does not participate in subsequent rounds', () => {
+            // 1. Setup Game
+            let game = createLudoGameInstance('eliminationTestGame', 'player1-id', 'Player1');
+
+            // Assign players
+            assignPlayerToSlot(game, 'player1-id', 'Player Red');
+            handlePlayerColorSelection(game, 'player1-id', P_RED);
+
+            assignPlayerToSlot(game, 'player2-id', 'Player Green');
+            handlePlayerColorSelection(game, 'player2-id', P_GREEN);
+
+            assignPlayerToSlot(game, 'player3-id', 'Player Blue');
+            handlePlayerColorSelection(game, 'player3-id', P_BLUE);
+
+            // Set game parameters (3 players, 2 victories, 4min timer)
+            const paramsResult = setGameParameters(game, 3, 2, '4min', game.creatorPlayerId);
+            expect(paramsResult.success).toBe(true);
+
+            // Start the game
+            const startResult = startGameActual(game);
+            expect(startResult.success).toBe(true);
+            expect(game.status).toBe('active');
+
+            // Verify initial state
+            expect(game.activePlayerColors).toEqual(expect.arrayContaining([P_RED, P_GREEN, P_BLUE]));
+            expect(game.activePlayerColors.length).toBe(3);
+            expect(game.num_players).toBe(3);
+            expect(game.eliminatedPlayers).toEqual([]);
+            expect(game.playerTimers[P_RED]).toBe(240);
+            expect(game.playerTimers[P_GREEN]).toBe(240);
+            expect(game.playerTimers[P_BLUE]).toBe(240);
+
+            // 2. Simulate Player Elimination (Green player timed out)
+            // Find Green's index to set current_player_index correctly
+            const greenIndex = game.activePlayerColors.indexOf(P_GREEN);
+            expect(greenIndex).not.toBe(-1); // Ensure Green is active
+            game.current_player_index = greenIndex;
+            expect(getPlayerColor(game)).toBe(P_GREEN); // Verify it's Green's turn
+
+            game.playerTimers[P_GREEN] = 1; // Set Green's timer to 1 second
+            game.playerTurnStartTime = Date.now() - 2000; // Simulate 2 seconds elapsed
+
+            // Spy on console.log to check for elimination message
+            const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+            switchPlayer(game); // This should trigger Green's elimination
+
+            expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining(`Player ${P_GREEN} PERMANENTLY eliminated due to timer.`));
+
+            // Assertions after Green's elimination
+            expect(game.eliminatedPlayers).toContain(P_GREEN);
+            expect(game.activePlayerColors).not.toContain(P_GREEN);
+            expect(game.activePlayerColors.length).toBe(2);
+            expect(game.num_players).toBe(2);
+            expect(game.playerTimers[P_GREEN]).toBe(0);
+
+            const currentPlayerAfterElimination = getPlayerColor(game);
+            expect([P_RED, P_BLUE]).toContain(currentPlayerAfterElimination); // Next player should be Red or Blue
+
+            // 3. Simulate End of Current Round (Red wins the round)
+            game.round_over = true;
+            game.round_winner = P_RED;
+            game.status = 'roundOver';
+
+            checkForGameVictory(game);
+            expect(game.playerScores[P_RED]).toBe(1);
+            expect(game.overall_game_over).toBe(false); // Game target is 2 victories
+
+            // 4. Start Next Round
+            startNextRound(game);
+
+            // Assertions for the new round
+            expect(game.status).toBe('active');
+            expect(game.activePlayerColors.length).toBe(2);
+            expect(game.activePlayerColors).toEqual(expect.arrayContaining([P_RED, P_BLUE]));
+            expect(game.activePlayerColors).not.toContain(P_GREEN);
+
+            expect(game.players.length).toBe(2); // game.players should also be updated
+            expect(game.players).toEqual(expect.arrayContaining([P_RED, P_BLUE]));
+            expect(game.players).not.toContain(P_GREEN);
+
+            expect(game.num_players).toBe(2);
+            // game.eliminatedPlayers tracks players who cannot play *at all* anymore (timer death).
+            // startGameActual initializes it to []. startNextRound does not clear it.
+            // So Green should still be listed as an eliminated player overall.
+            expect(game.eliminatedPlayers).toContain(P_GREEN);
+
+            expect(Object.keys(game.board.players)).toEqual(expect.arrayContaining([P_RED, P_BLUE]));
+            expect(Object.keys(game.board.players).length).toBe(2);
+            expect(game.board.players[P_GREEN]).toBeUndefined();
+
+            expect(Object.keys(game.pawns)).toEqual(expect.arrayContaining([P_RED, P_BLUE]));
+            expect(Object.keys(game.pawns).length).toBe(2);
+            expect(game.pawns[P_GREEN]).toBeUndefined();
+
+            const currentPlayerInNewRound = getPlayerColor(game);
+            expect([P_RED, P_BLUE]).toContain(currentPlayerInNewRound);
+
+            // 5. Verify Eliminated Player Cannot Participate
+            // This is implicitly verified by Green not being in activePlayerColors,
+            // thus getPlayerColor will not return Green, and Green cannot take a turn.
+            // Also, board and pawns for Green are not initialized for the new round.
+
+            consoleLogSpy.mockRestore();
+        });
+    });
 });
